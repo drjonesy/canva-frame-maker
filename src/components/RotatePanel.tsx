@@ -1,6 +1,8 @@
 import React from 'react';
-import { RotateCcw, RotateCw } from 'lucide-react';
+import { FlipHorizontal, FlipVertical, RotateCcw, RotateCw } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
+import { ParallelIcon } from './ParallelIcon';
+import { FlipDirection } from '../utils/mirror';
 import {
   ROTATE_MAX_STEP,
   ROTATE_MIN_STEP,
@@ -19,6 +21,15 @@ interface Props {
   onOriginChange: (origin: RotateOrigin) => void;
   /** Turn the selection by this many degrees; positive is clockwise. */
   onRotate: (deltaDeg: number) => void;
+  /** Reflect the selection about its centre — left/right, or top/bottom. */
+  onFlip: (direction: FlipDirection) => void;
+
+  /** Turn that would bring the picked edge parallel to the picked guide. */
+  parallelAngle: number | null;
+  canParallel: boolean;
+  /** What Parallel will do, or what is still missing before it can. */
+  parallelHint: string;
+  onParallel: () => void;
 }
 
 const PRESETS = [15, 30, 45, 90];
@@ -32,6 +43,11 @@ export const RotatePanel: React.FC<Props> = ({
   onAngleTextChange,
   onOriginChange,
   onRotate,
+  onFlip,
+  parallelAngle,
+  canParallel,
+  parallelHint,
+  onParallel,
 }) => {
   const { isDark } = useTheme();
   const muted = isDark ? 'text-neutral-400' : 'text-gray-500';
@@ -80,6 +96,10 @@ export const RotatePanel: React.FC<Props> = ({
     if (canRotate) onRotate(delta);
   };
 
+  const flipTo = (direction: FlipDirection) => {
+    if (canRotate) onFlip(direction);
+  };
+
   return (
     <div className="space-y-3">
       {/* Quarter and half turns, the angles that need no typing */}
@@ -114,6 +134,36 @@ export const RotatePanel: React.FC<Props> = ({
             className={actionClass}
           >
             180°
+          </button>
+        </div>
+      </div>
+
+      {/* Reflection about the shape's own centre. Its bounding box does not
+          move, so a flip only ever changes which way the shape faces. */}
+      <div>
+        <div className={label}>Flip</div>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            aria-disabled={!canRotate || undefined}
+            onClick={() => flipTo('horizontal')}
+            title="Flip horizontal — swap left for right (Shift+H)"
+            aria-keyshortcuts="Shift+H"
+            className={actionClass}
+          >
+            <FlipHorizontal className="w-3.5 h-3.5" />
+            Horizontal
+          </button>
+          <button
+            type="button"
+            aria-disabled={!canRotate || undefined}
+            onClick={() => flipTo('vertical')}
+            title="Flip vertical — swap top for bottom (Shift+V)"
+            aria-keyshortcuts="Shift+V"
+            className={actionClass}
+          >
+            <FlipVertical className="w-3.5 h-3.5" />
+            Vertical
           </button>
         </div>
       </div>
@@ -169,7 +219,8 @@ export const RotatePanel: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Pivot. Only tells two things apart once several shapes are selected. */}
+      {/* Pivot, shared by rotating and flipping. Only tells two things apart
+          once several shapes are selected. */}
       <div>
         <div className={label}>Pivot</div>
         <div
@@ -196,16 +247,51 @@ export const RotatePanel: React.FC<Props> = ({
         </div>
       </div>
 
+      {/* Turn until a chosen edge runs along a chosen guide. The angle is
+          worked out from the two picked points, so there is nothing to type. */}
+      <div>
+        <div className={label}>Parallel to guide</div>
+        <button
+          type="button"
+          aria-disabled={!canParallel || undefined}
+          onClick={() => {
+            if (canParallel) onParallel();
+          }}
+          title={parallelHint}
+          className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-[11px] font-semibold transition-colors ${
+            canParallel
+              ? 'cursor-pointer bg-[#F43F5E]/10 hover:bg-[#F43F5E]/20 border-[#F43F5E]/30 text-[#E11D48] dark:text-[#FB7185]'
+              : `opacity-40 cursor-default ${
+                  isDark
+                    ? 'bg-[#242424] border-[#2A2A2A] text-neutral-400'
+                    : 'bg-gray-50 border-gray-200 text-gray-500'
+                }`
+          }`}
+        >
+          <ParallelIcon className="w-4 h-4" />
+          Make Edge Parallel
+          {parallelAngle !== null && canParallel && (
+            <span className="font-mono text-[10px] opacity-80">
+              {parallelAngle > 0 ? '↻' : '↺'}
+              {Math.abs(parallelAngle).toFixed(1)}°
+            </span>
+          )}
+        </button>
+        <p className={`text-[10px] leading-relaxed mt-1.5 ${muted}`}>
+          {parallelHint}
+        </p>
+      </div>
+
       <p className={`text-[10px] leading-relaxed ${muted}`}>
         {!canRotate
-          ? 'Select a shape to rotate it. '
+          ? 'Select a shape to rotate or flip it. '
           : origin === 'each'
           ? `Each of the ${selectedCount} selected shape${
               selectedCount > 1 ? 's turns' : ' turns'
-            } about its own centre. `
+            } and flips about its own centre. `
           : selectedCount > 1
-          ? `The ${selectedCount} selected shapes turn together about the centre of the selection. `
-          : 'The shape turns about the centre of its bounding box. '}
+          ? `The ${selectedCount} selected shapes turn and flip together about the centre of the selection. `
+          : 'The shape turns and flips about the centre of its bounding box. '}
         On the canvas, drag the handle above the selection box to rotate freely;
         hold Shift to snap to {ROTATE_SNAP_DEG}°.
       </p>

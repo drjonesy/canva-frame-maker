@@ -1,4 +1,5 @@
-import { Guide, GuideAxis, PathPoint, VectorShape } from '../types';
+import { GuideAxis, PathPoint, Point2D, VectorShape } from '../types';
+import { shapeCenter } from './rotate';
 import { generateShapeId } from './shapePresets';
 
 /**
@@ -12,17 +13,20 @@ export function reflectCoord(value: number, position: number): number {
 }
 
 /**
- * Reflect a point list across a guide.
+ * Reflect a point list across a line.
  *
  * Handles move with their anchor, and `cp1`/`cp2` keep their roles: reflection
  * maps each curve onto its mirror image without changing the order the points
  * are visited, so the incoming handle is still the incoming one.
+ *
+ * `idPrefix` renumbers the points for a copy; omit it — as flipping in place
+ * does — to keep the ids, so a point sub-selection survives the reflection.
  */
 function mirrorPoints(
   points: PathPoint[],
-  idPrefix: string,
   axis: GuideAxis,
-  position: number
+  position: number,
+  idPrefix?: string
 ): PathPoint[] {
   const flip = (p: { x: number; y: number }) =>
     axis === 'x'
@@ -33,7 +37,7 @@ function mirrorPoints(
     const anchor = flip(p);
     return {
       ...p,
-      id: `${idPrefix}_p${i}`,
+      id: idPrefix ? `${idPrefix}_p${i}` : p.id,
       x: anchor.x,
       y: anchor.y,
       cp1: p.cp1 ? flip(p.cp1) : undefined,
@@ -59,28 +63,73 @@ export function mirrorShape(
     ...shape,
     id,
     name: shape.name.endsWith(' Mirror') ? shape.name : `${shape.name} Mirror`,
-    points: mirrorPoints(shape.points, id, axis, position),
+    points: mirrorPoints(shape.points, axis, position, id),
     subPaths: shape.subPaths?.map((sub, i) =>
-      mirrorPoints(sub, `${id}_s${i}`, axis, position)
+      mirrorPoints(sub, axis, position, `${id}_s${i}`)
     ),
   };
 }
 
 /**
- * The guide Mirror reflects across.
+ * Which way round a flip turns the shape.
  *
- * The most recently picked selected guide wins — `selectedGuideIds` is appended
- * to as guides are shift-clicked, so the last entry is the latest choice. With
- * nothing selected a lone guide is used, since there is then no ambiguity; with
- * several guides and no selection there is no way to tell which was meant.
+ * `horizontal` swaps left for right — the reflection is across a *vertical*
+ * line — and `vertical` swaps top for bottom. The names describe the direction
+ * the shape moves, which is how every design tool labels the two.
  */
-export function resolveMirrorGuide(
-  guides: Guide[],
-  selectedGuideIds: string[]
-): Guide | null {
-  for (let i = selectedGuideIds.length - 1; i >= 0; i--) {
-    const picked = guides.find((g) => g.id === selectedGuideIds[i]);
-    if (picked) return picked;
-  }
-  return guides.length === 1 ? guides[0] : null;
+export type FlipDirection = 'horizontal' | 'vertical';
+
+/** The axis the reflection line lies on for each direction. */
+const FLIP_AXIS: Record<FlipDirection, GuideAxis> = {
+  horizontal: 'x',
+  vertical: 'y',
+};
+
+/**
+ * Reflect a shape about `center`, in place: same id, same points, same name.
+ *
+ * Unlike Mirror — which drops a reflected *copy* across a guide — a flip is a
+ * transform of the shape itself, so it keeps its identity the way a rotation
+ * does. The bounding box does not move: reflecting about the centre of the box
+ * maps the box onto itself.
+ *
+ * A rectangle's `cornerRadiusPct` survives, unlike an off-axis rotation: a flip
+ * maps an axis-aligned rectangle onto an axis-aligned rectangle of the same
+ * size, so "rebuild me from my bounding box" still describes the shape.
+ */
+export function flipShape(
+  shape: VectorShape,
+  direction: FlipDirection,
+  center: Point2D
+): VectorShape {
+  const axis = FLIP_AXIS[direction];
+  const position = axis === 'x' ? center.x : center.y;
+
+  return {
+    ...shape,
+    points: mirrorPoints(shape.points, axis, position),
+    subPaths: shape.subPaths?.map((sub) => mirrorPoints(sub, axis, position)),
+  };
+}
+
+/**
+ * Flip the selected shapes.
+ *
+ * `center` fixes the line to reflect about; pass `null` to flip each shape
+ * about its own centre, so a row of objects each turn in place rather than
+ * swapping sides of the selection. Locked shapes are left alone — they cannot
+ * be dragged on the canvas either, so a flip must not be a way around the lock.
+ */
+export function flipShapes(
+  shapes: VectorShape[],
+  selectedIds: string[],
+  direction: FlipDirection,
+  center: Point2D | null
+): VectorShape[] {
+  if (selectedIds.length === 0) return shapes;
+
+  return shapes.map((s) => {
+    if (!selectedIds.includes(s.id) || s.locked) return s;
+    return flipShape(s, direction, center ?? shapeCenter(s));
+  });
 }

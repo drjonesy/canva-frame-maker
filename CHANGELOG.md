@@ -11,6 +11,137 @@ This project has no releases yet, so entries are grouped by date.
 
 #### Added
 
+- **An Add Anchor tool** (`A`), in the rail directly under the Pen, drawn as an
+  small outlined anchor ring at the bottom left with a bold plus filling the
+  top right (two overlapping rounded rectangles — at 16px a stroked cross heavy
+  enough to read that boldly loses its corners). Where the Pen extends a
+  path from its loose end, this one splits a segment: hover the outline of the
+  selected shape and a **dot** — not the Pen's dashed rubber band, which would
+  promise a segment that is never drawn — sits exactly where the point will
+  land; click to drop it there.
+  - **The outline does not move.** A curved segment is split with de Casteljau
+    (`insertPointOnPath` in `utils/addPoint.ts`), so the two halves carry the
+    handles that reproduce the original curve, and a straight run gets a bare
+    anchor rather than a curve with flat handles. Coordinates are left
+    unrounded on purpose — the Pen rounds because it places a point where you
+    clicked, but rounding here would drag the outline off its own path. A split
+    that inherits a zero-length handle drops it, so no stray handle dot appears
+    under an anchor.
+  - The spot under the pointer is `projectOntoPath`: every segment coarsely
+    sampled, the best hit refined by ternary search. Cheap, and accurate to far
+    inside a pixel.
+  - Clicking a shape that is not the one being edited **selects it** instead of
+    adding a point, and a click nowhere near an outline does nothing at all —
+    it does not clear the selection, since losing the shape you are editing is
+    the one thing that would stop the tool working. Anchors keep their own hit
+    target, so clicking an existing point picks it up rather than stacking a
+    second point on top of it, and the new point is draggable the moment it
+    exists.
+  - Works on the closing segment of a closed path, which is what the Pen could
+    not do at all, and on open paths.
+
+#### Changed
+
+- **A new icon for Parallel to Guide** (`ParallelIcon.tsx`, drawn by both the
+  tool rail and the Rotate tab): a solid arrow on the left running into a solid
+  upright bar on the right. The old drawing paired a dashed rule with a thin
+  slanted line and a swinging arc; at 16px the dashes broke up into specks and
+  the guide read as a second, fainter edge rather than the thing being aligned
+  to. Everything is **filled, not stroked** — a 4px-thick outlined rectangle
+  closes up into a smudge at rail size — and the arrowhead carries a hairline
+  stroke of its own colour only to round its corners to match the bar.
+
+#### Fixed
+
+- **The Pen no longer scribbles on a closed path.** With a closed shape
+  selected it was appending to `points`, which has no visible end on a closed
+  outline — the click dragged the closing segment across the shape instead of
+  adding a point where you clicked, and a dashed rubber band trailed from the
+  last anchor to the cursor suggesting a path still being drawn. The Pen now
+  starts a fresh path in that situation and says so in the status pill, which
+  points at Add Anchor (`A`) for editing the existing one.
+
+- **The Pen tool can close a path again.** Clicking the first anchor was
+  supposed to join the path up, but the anchor layer is drawn above the canvas
+  and calls `stopPropagation()` on mouse down, so the click never reached the
+  closing branch in `handleMouseDown` — it started dragging that anchor
+  instead. Only the thin ring between the anchor's 9px hit target and the 12px
+  closing radius still worked, which in practice meant the path could not be
+  closed at all. Closing now happens in the anchor's own handler, with the
+  canvas handler kept for that outer ring.
+
+#### Added
+
+- **A trash button in the top toolbar**, next to Undo/Redo, doing exactly what
+  the Delete key does. The dispatch that Delete used — most recently picked
+  wins, so guides, points and shapes cannot delete each other's selection — is
+  now `handleDeleteSelection` in `App.tsx`, shared by the key handler and the
+  button rather than written out twice. The button greys out when there is
+  nothing to remove, and its tooltip names what would go (guides, points or
+  shapes), since the same key acts on three different things depending on what
+  was touched last.
+
+- **Flip horizontal / Flip vertical** (`flipShapes` in `utils/mirror.ts`), in the
+  Transform tab and on `Shift+H` / `Shift+V`. The shape is reflected about the
+  centre of its own bounding box, so the box does not move and only the facing
+  changes — the "flip it in place" that Mirror, which drops a *copy* across a
+  guide, deliberately is not.
+  - It is a transform of the shape, not a new object: the id, the name, the
+    layer position and the anchor ids all survive, so a point sub-selection is
+    still there afterwards and Layers does not sprout a copy. One undo step.
+  - **The Pivot toggle drives it too.** Under *Selection* the picked shapes flip
+    as a block, swapping sides of the selection; under *Each object* every shape
+    flips where it stands. With one shape selected the two are the same thing.
+  - A rectangle's `cornerRadiusPct` is **kept**, unlike on an off-axis rotation:
+    a flip maps an axis-aligned rectangle onto an axis-aligned rectangle of the
+    same size, so "rebuild me from my bounding box" still describes the shape.
+  - Sub-paths are reflected with the outline, and handles keep their roles — the
+    same rules mirroring already followed, since a flip *is* a reflection, just
+    about the shape's own centre rather than a guide. `mirrorPoints` now takes
+    an optional id prefix and is shared by both.
+  - Locked shapes are skipped, as with rotation and nudging.
+  - The shortcuts are Shift-qualified so the bare letters stay free for future
+    tools and a stray keypress cannot flip a shape by accident.
+
+- **Several ways to close a Pen path**, since the first anchor is a small
+  target and nothing on screen said it was clickable:
+  - The first anchor wears an **orange halo** whenever the path has enough
+    points to close, and brightens when the pointer is on it. Its hit target
+    grows to 12px while it is the closing anchor.
+  - The rubber-band line **snaps to that anchor and goes solid orange** on
+    approach, so the closing segment is drawn before the click, not after.
+  - **Enter closes the path**; Escape still ends it open. Both now ignore key
+    presses coming from an input, so typing a coordinate in the Pen inspector
+    no longer ends the path mid-edit.
+  - A **"Close Shape" button** in the Pen inspector, which — unlike the
+    existing Open/Closed toggle — shows even with no anchor selected, because
+    the selection comes and goes as points are dropped.
+  - Closing joins the path *and* leaves the Pen for Select: a closed frame is
+    finished, and staying in the tool only scatters stray points over it. It
+    records one undo step.
+
+- **Parallel to Guide** (`utils/parallel.ts`), on the left rail with shortcut
+  `P` and as a **"Make Edge Parallel"** button in the Rotate tab. Pick a guide,
+  pick the two points at either end of an edge under Sub-Select, and the shape
+  turns until that edge runs along the guide — the fix for a shape that is only
+  *nearly* square to a line. "Align to Guide" then slides it flush.
+  - The turn is always the shorter way round, never more than a quarter circle:
+    a line reversed is the same line, so the angle is wrapped into (-90°, 90°]
+    rather than being allowed to flip a shape end over end to reach the same
+    alignment.
+  - It **pivots on the middle of the edge**, not the centre of the bounding
+    box. The edge is the part being lined up, so it is the part that should
+    stay put; pivoting on the box centre would swing it away from the spot
+    being watched and leave a second move to do afterwards.
+  - **Any two anchors count**, not only the ends of one segment — two opposite
+    corners are a fair way to level a shape — and the direction measured is the
+    straight line between them even where the segment itself curves.
+  - The picked edge is **drawn on the canvas** as a rose chord between the two
+    anchors, so "select an edge" is something you can see rather than infer. It
+    sits under the anchor layer, where it cannot block a point.
+  - The button reports the exact turn it is about to make (`↻8.4°`) and dims
+    when the edge is already parallel, with the hint saying so. Locked shapes
+    are refused, as with every other rotation.
 - **Rotation** (`utils/rotate.ts`, `RotatePanel.tsx`), two ways in:
   - **A rotate handle on the canvas**, floating 22px above the top edge of the
     selection box on a short stem. Drag it to turn the selection freely about
@@ -137,6 +268,32 @@ out of the shape history, so undoing a move does not resurrect a guide you
 meant to clear.
 
 #### Changed
+
+- **The "Rotate" tab is now "Transform".** It holds Flip as well as the turns
+  and Parallel, and nobody goes looking for a flip under a rotation heading. The
+  badge still carries the rotation angle. Tab labels no longer wrap.
+
+- **Guides are now clickable under Sub-Select as well as Select.** Choosing an
+  edge for Parallel means picking two anchors *and* a guide, and switching to
+  Select to reach the guide cleared the point selection on the way. The Pen is
+  still excluded, where the grab band would eat clicks meant to drop a point;
+  anchors are safe either way, since the anchor layer is drawn after the guides
+  and wins the hit test.
+- **`resolveMirrorGuide` is now `resolvePickedGuide` in `utils/guides.ts`.**
+  Mirror and Parallel both need exactly one guide and resolve it the same way —
+  most recently picked, falling back to the only guide on the canvas — so the
+  rule no longer lives inside the mirroring code. (`AlignTab` still resolves per
+  axis, since it drives an x control and a y control side by side.)
+- **The pen bar's align buttons now use the Align tab's icons** (`PenInspector`).
+  The multi-point row still offers the same six alignments, but it was drawing
+  left/centre/right as *text*-alignment glyphs (`AlignLeft`/`AlignCenter`/
+  `AlignRight`, stacks of lines) and then reusing `AlignStartVertical`/
+  `AlignCenterVertical`/`AlignEndVertical` for top/middle/bottom — the very
+  icons the Align tab uses for left/centre/right, so one glyph meant two
+  different things depending on which panel you were looking at. The row now
+  reads Start/Centre/End Vertical for the X alignments and Start/Centre/End
+  Horizontal for the Y ones, matching Align Objects exactly. The six buttons
+  are built from a shared array rather than hand-written one by one.
 
 - **"Appearance" renamed to "Style", and Style and Move are now a second tabbed
   block** below the Align/Merge/Guides one, using the same `TabbedSection`. They

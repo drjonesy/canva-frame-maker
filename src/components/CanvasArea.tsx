@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import {
   CanvasDimensions,
@@ -23,6 +23,7 @@ import {
   pointsToSvgPath,
   shapeToSvgPath,
 } from '../utils/bezier';
+import { insertPointOnPath, projectOntoPath } from '../utils/addPoint';
 import { Rulers, RULER_SIZE } from './Rulers';
 
 interface Props {
@@ -85,6 +86,23 @@ const GUIDE_ACTIVE_COLOR = '#F43F5E';
 
 /** How close, in screen pixels, a dragged shape has to come to snap to a guide. */
 const SNAP_PX = 6;
+
+/** Radius, in screen pixels, of an anchor's invisible click target. */
+const ANCHOR_HIT_PX = 9;
+
+/**
+ * How close, in screen pixels, the pointer has to come to the first anchor for
+ * a pen click to close the path. Slightly wider than the anchor's normal
+ * target so the closing gesture is the easier one to hit.
+ */
+const CLOSE_PATH_PX = 12;
+
+/**
+ * How close, in screen pixels, the pointer has to come to an outline for the
+ * Add Anchor tool to offer a point there. Generous: the target is a line, and
+ * a click that misses it does nothing at all.
+ */
+const ADD_POINT_PX = 14;
 
 export const CanvasArea: React.FC<Props> = ({
   dimensions,
@@ -166,6 +184,79 @@ export const CanvasArea: React.FC<Props> = ({
   // Currently active shape being edited or drawn
   const activeShape = shapes.find((s) => selectedShapeIds.includes(s.id));
 
+  // While the pen is drawing, the first anchor doubles as the close button. A
+  // path needs three points before it encloses anything, and one already closed
+  // has nothing left to join.
+  const penClosable =
+    currentTool === 'pen' &&
+    !!activeShape &&
+    !activeShape.closed &&
+    activeShape.points.length >= 3;
+
+  // Pointer sitting on that first anchor, ready to close.
+  const isNearFirstPoint =
+    penClosable &&
+    Math.hypot(
+      mouseCanvasPos.x - activeShape!.points[0].x,
+      mouseCanvasPos.y - activeShape!.points[0].y
+    ) <= CLOSE_PATH_PX / zoom;
+
+  // Joining the last anchor back to the first also ends the drawing session:
+  // a closed frame is finished, and staying in the pen would only start
+  // scattering stray points on top of it.
+  const closeActivePath = useCallback(() => {
+    if (!activeShape || activeShape.closed || activeShape.points.length < 3) return;
+    onBeginTransform();
+    onUpdateActivePoints(activeShape.points, true);
+    onFinishPath();
+  }, [activeShape, onBeginTransform, onUpdateActivePoints, onFinishPath]);
+
+  /**
+   * Where the Add Anchor tool would drop a point for a pointer at `pos`, or
+   * null if it would drop none — too far from the outline, or close enough to
+   * an anchor that the anchor's own hit target is going to take the click and
+   * a second point on top of it would be a mistake anyway.
+   */
+  const addPointTargetAt = useCallback(
+    (pos: Point2D) => {
+      if (!activeShape || activeShape.points.length < 2) return null;
+
+      const onAnchor = activeShape.points.some(
+        (p) => Math.hypot(pos.x - p.x, pos.y - p.y) <= ANCHOR_HIT_PX / zoom
+      );
+      if (onAnchor) return null;
+
+      const hit = projectOntoPath(activeShape.points, !!activeShape.closed, pos);
+      if (!hit || hit.distance > ADD_POINT_PX / zoom) return null;
+      return hit;
+    },
+    [activeShape, zoom]
+  );
+
+  // The spot under the pointer right now, for the preview dot. Recomputed on
+  // every mouse move, so it is kept to the one tool that draws it.
+  const addPointHover = useMemo(
+    () => (currentTool === 'addPoint' ? addPointTargetAt(mouseCanvasPos) : null),
+    [currentTool, addPointTargetAt, mouseCanvasPos]
+  );
+
+  // Split the segment under the pointer, leaving the outline where it is. The
+  // projection is taken fresh from the click rather than from the hover state,
+  // so a click that lands without a preceding move still hits the right spot.
+  const addPointAt = useCallback(
+    (pos: Point2D) => {
+      if (!activeShape) return;
+      const hit = addPointTargetAt(pos);
+      if (!hit) return;
+
+      const { points, insertedId } = insertPointOnPath(activeShape.points, hit);
+      onBeginTransform();
+      onUpdateActivePoints(points);
+      onSelectPoint(insertedId, false);
+    },
+    [activeShape, addPointTargetAt, onBeginTransform, onUpdateActivePoints, onSelectPoint]
+  );
+
   // Convert browser client coords to canvas coordinates
   const clientToCanvas = useCallback(
     (clientX: number, clientY: number): Point2D => {
@@ -185,13 +276,30 @@ export const CanvasArea: React.FC<Props> = ({
     [dimensions, pan, zoom]
   );
 
-  // Key handlers for Space (Pan), Escape/Enter (Finish Pen), Delete (Delete Point)
+  // Key handlers for Space (Pan), Enter (Close Pen Path), Escape (Finish Open)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Typing a coordinate into the inspector must not end the path.
+      const el = e.target as HTMLElement | null;
+      if (
+        el &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          el.isContentEditable)
+      ) {
+        return;
+      }
+
       if (e.code === 'Space' && !spacePressed) {
         setSpacePressed(true);
       }
-      if (e.key === 'Escape' || e.key === 'Enter') {
+      // Enter finishes the shape the way the pen is usually meant to end —
+      // joined up — while Escape always leaves the path open.
+      if (e.key === 'Enter') {
+        if (penClosable) closeActivePath();
+        else onFinishPath();
+      }
+      if (e.key === 'Escape') {
         onFinishPath();
       }
     };
@@ -208,7 +316,7 @@ export const CanvasArea: React.FC<Props> = ({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [spacePressed, onFinishPath]);
+  }, [spacePressed, onFinishPath, penClosable, closeActivePath]);
 
   // Center canvas on first load
   useEffect(() => {
@@ -301,9 +409,20 @@ export const CanvasArea: React.FC<Props> = ({
 
     const canvasPos = clientToCanvas(e.clientX, e.clientY);
 
+    // Add Anchor: only ever splits a segment. A click nowhere near the outline
+    // is left alone rather than clearing the selection, since losing the shape
+    // you are editing is the one thing that would stop the tool working.
+    if (currentTool === 'addPoint') {
+      addPointAt(canvasPos);
+      return;
+    }
+
     // If Pen tool is active
     if (currentTool === 'pen') {
-      if (!activeShape) {
+      // A closed outline has no loose end to carry on from, so the Pen starts
+      // a fresh path rather than appending a point that would drag the closing
+      // segment across the shape. Adding to a closed path is Add Anchor's job.
+      if (!activeShape || activeShape.closed) {
         // Start a brand new pen shape
         const newPointId = `pt_${Date.now()}_0`;
         const newPoint: PathPoint = {
@@ -345,16 +464,12 @@ export const CanvasArea: React.FC<Props> = ({
       } else {
         // Active shape exists in pen mode
         const pts = [...activeShape.points];
-        // Check if clicking near the first point to close path
-        if (pts.length >= 3) {
-          const first = pts[0];
-          const distToFirst = Math.hypot(canvasPos.x - first.x, canvasPos.y - first.y);
-          if (distToFirst <= 12 / zoom) {
-            // Close path!
-            onUpdateActivePoints(pts, true);
-            onFinishPath();
-            return;
-          }
+        // Clicking the first anchor closes the path. Note that the anchor layer
+        // sits above this handler and stops propagation, so most such clicks
+        // are caught there instead — this covers the ring just outside it.
+        if (isNearFirstPoint) {
+          closeActivePath();
+          return;
         }
 
         // Add new point to active pen path
@@ -656,17 +771,6 @@ export const CanvasArea: React.FC<Props> = ({
     return () => window.removeEventListener('mouseup', handleMouseUp);
   }, [guideDrag, showRulers, onDeleteGuide]);
 
-  // Check if hovering near the first point to show closure indicator in pen mode
-  const isNearFirstPoint = (() => {
-    if (currentTool !== 'pen' || !activeShape || activeShape.points.length < 3)
-      return false;
-    const first = activeShape.points[0];
-    return (
-      Math.hypot(mouseCanvasPos.x - first.x, mouseCanvasPos.y - first.y) <=
-      14 / zoom
-    );
-  })();
-
   const activeBounds =
     activeShape && currentTool === 'select' ? getShapeBounds(activeShape) : null;
 
@@ -716,12 +820,28 @@ export const CanvasArea: React.FC<Props> = ({
   const vbWidth = Math.max(dimensions.width, originX + spanX) - vbMinX;
   const vbHeight = Math.max(dimensions.height, originY + spanY) - vbMinY;
 
-  // Guides only take clicks under the Select tool: elsewhere they would eat
-  // pen clicks and anchor grabs that happen to land near a line.
-  const guidesInteractive = showGuides && currentTool === 'select';
+  // Guides take clicks under Select and Sub-Select, but not the Pen, where the
+  // grab band would eat clicks meant to drop a point. Anchors are safe either
+  // way: the anchor layer is drawn after the guides, so it wins the hit test.
+  // Sub-Select is included because picking an edge for Parallel means picking
+  // two anchors *and* a guide, and switching to Select to reach the guide would
+  // clear the point selection on the way.
+  const guidesInteractive =
+    showGuides && (currentTool === 'select' || currentTool === 'directSelect');
 
   /** Distance in from the viewport edge that clears the ruler band. */
   const guideLabelInset = (showRulers ? RULER_SIZE + 5 : 5) / zoom;
+
+  // The two anchors Parallel would read as an edge, drawn as a chord across
+  // the shape so "pick an edge" is something you can see rather than infer.
+  // It is the straight line between them either way — that is the direction
+  // Parallel measures, even where the segment itself curves.
+  const pickedEdge =
+    activeShape && selectedPointIds.length === 2
+      ? (selectedPointIds
+          .map((id) => activeShape.points.find((p) => p.id === id))
+          .filter(Boolean) as PathPoint[])
+      : [];
 
   return (
     <div
@@ -738,7 +858,13 @@ export const CanvasArea: React.FC<Props> = ({
           : spacePressed || currentTool === 'pan'
           ? 'cursor-grab active:cursor-grabbing'
           : currentTool === 'pen'
-          ? 'cursor-crosshair'
+          ? isNearFirstPoint
+            ? 'cursor-pointer'
+            : 'cursor-crosshair'
+          : currentTool === 'addPoint'
+          ? addPointHover
+            ? 'cursor-copy'
+            : 'cursor-crosshair'
           : 'cursor-default'
       }`}
     >
@@ -817,6 +943,20 @@ export const CanvasArea: React.FC<Props> = ({
                     : 'cursor-pointer hover:opacity-95'
                 }`}
                 onMouseDown={(e) => {
+                  // Add Anchor: the fill sits above the canvas handler, so a
+                  // click on the shape has to be dealt with here. Picking the
+                  // shape comes first — you cannot add a point to an outline
+                  // that is not the one being edited.
+                  if (currentTool === 'addPoint') {
+                    e.stopPropagation();
+                    if (shape.id !== activeShape?.id) {
+                      onSelectShape(shape.id, false);
+                      return;
+                    }
+                    addPointAt(clientToCanvas(e.clientX, e.clientY));
+                    return;
+                  }
+
                   if (currentTool === 'select' || currentTool === 'directSelect') {
                     e.stopPropagation();
                     onSelectShape(shape.id, e.shiftKey);
@@ -925,24 +1065,66 @@ export const CanvasArea: React.FC<Props> = ({
               );
             })}
 
-          {/* Pen Live Preview Line to Cursor */}
-          {currentTool === 'pen' && activeShape && activeShape.points.length > 0 && (
+          {/* Pen Live Preview Line to Cursor. Over the first anchor it snaps to
+              that anchor and goes solid, so the closing segment is drawn before
+              the click rather than only after it. */}
+          {currentTool === 'pen' && activeShape && !activeShape.closed && activeShape.points.length > 0 && (
             <line
               x1={activeShape.points[activeShape.points.length - 1].x}
               y1={activeShape.points[activeShape.points.length - 1].y}
-              x2={mouseCanvasPos.x}
-              y2={mouseCanvasPos.y}
-              stroke="#6366f1"
+              x2={isNearFirstPoint ? activeShape.points[0].x : mouseCanvasPos.x}
+              y2={isNearFirstPoint ? activeShape.points[0].y : mouseCanvasPos.y}
+              stroke={isNearFirstPoint ? '#FF5722' : '#6366f1'}
               strokeWidth={2 / zoom}
-              strokeDasharray="4,4"
+              strokeDasharray={isNearFirstPoint ? undefined : '4,4'}
               className="pointer-events-none"
             />
           )}
 
+          {/* Add Anchor preview: a dot sitting on the outline exactly where a
+              click would leave a point. The Pen's dashed rubber band is about
+              where the path is going next; this tool adds nothing to the end,
+              so the dot is the whole of what it promises. */}
+          {currentTool === 'addPoint' && addPointHover && (
+            <g className="pointer-events-none">
+              <circle
+                cx={addPointHover.point.x}
+                cy={addPointHover.point.y}
+                r={7 / zoom}
+                fill="#FF5722"
+                fillOpacity={0.18}
+              />
+              <circle
+                cx={addPointHover.point.x}
+                cy={addPointHover.point.y}
+                r={3.5 / zoom}
+                fill="#FF5722"
+                stroke="#ffffff"
+                strokeWidth={1.25 / zoom}
+              />
+            </g>
+          )}
+
           {/* Direct Selection / Pen Anchor Points & Handles Layer */}
           {activeShape &&
-            (currentTool === 'directSelect' || currentTool === 'pen') && (
+            (currentTool === 'directSelect' ||
+              currentTool === 'pen' ||
+              currentTool === 'addPoint') && (
               <g className="sub-select-layer">
+                {/* The picked edge, under the anchors so it never blocks one */}
+                {pickedEdge.length === 2 && (
+                  <line
+                    x1={pickedEdge[0].x}
+                    y1={pickedEdge[0].y}
+                    x2={pickedEdge[1].x}
+                    y2={pickedEdge[1].y}
+                    stroke="#F43F5E"
+                    strokeWidth={2.5 / zoom}
+                    strokeOpacity={0.85}
+                    strokeLinecap="round"
+                    className="pointer-events-none"
+                  />
+                )}
                 {activeShape.points.map((pt, idx) => {
                   const isPointSelected = selectedPointIds.includes(pt.id);
                   const isFirst = idx === 0;
@@ -1030,6 +1212,13 @@ export const CanvasArea: React.FC<Props> = ({
                          className="group cursor-pointer"
                          onMouseDown={(e) => {
                            e.stopPropagation();
+                           // This layer is drawn above the canvas and swallows
+                           // the click, so closing on the first anchor has to
+                           // happen here rather than in handleMouseDown.
+                           if (isFirst && penClosable) {
+                             closeActivePath();
+                             return;
+                           }
                            onSelectPoint(pt.id, e.shiftKey);
                            setDragTarget({
                              type: 'point',
@@ -1041,7 +1230,30 @@ export const CanvasArea: React.FC<Props> = ({
                            });
                          }}
                        >
-                         <circle cx={pt.x} cy={pt.y} r={9 / zoom} fill="transparent" />
+                         <circle
+                           cx={pt.x}
+                           cy={pt.y}
+                           r={
+                             (isFirst && penClosable ? CLOSE_PATH_PX : ANCHOR_HIT_PX) /
+                             zoom
+                           }
+                           fill="transparent"
+                         />
+                         {/* Halo marking the anchor that closes the path, so the
+                             gesture is visible from across the canvas rather
+                             than only once the pointer is already on it. */}
+                         {isFirst && penClosable && (
+                           <circle
+                             cx={pt.x}
+                             cy={pt.y}
+                             r={(isNearFirstPoint ? 7 : 5.5) / zoom}
+                             fill="none"
+                             stroke="#FF5722"
+                             strokeWidth={1.5 / zoom}
+                             strokeOpacity={isNearFirstPoint ? 1 : 0.5}
+                             className="pointer-events-none"
+                           />
+                         )}
                          <circle
                            cx={pt.x}
                            cy={pt.y}
@@ -1260,7 +1472,25 @@ export const CanvasArea: React.FC<Props> = ({
         {currentTool === 'pen' && (
           <>
             <span className={isDark ? 'text-[#444]' : 'text-gray-300'}>•</span>
-            <span className="text-[#F43F5E] font-medium">Pen: Click to add point, drag for curve</span>
+            <span className="text-[#F43F5E] font-medium">
+              {penClosable
+                ? 'Pen: Click the first anchor or press Enter to close · Esc leaves it open'
+                : activeShape?.closed
+                ? 'Pen: This path is closed — click to start a new one, or use Add Anchor (A) to edit it'
+                : 'Pen: Click to add point, drag for curve'}
+            </span>
+          </>
+        )}
+        {currentTool === 'addPoint' && (
+          <>
+            <span className={isDark ? 'text-[#444]' : 'text-gray-300'}>•</span>
+            <span className="text-[#F43F5E] font-medium">
+              {!activeShape
+                ? 'Add Anchor: Click a shape to edit its outline'
+                : addPointHover
+                ? 'Add Anchor: Click to drop a point here'
+                : 'Add Anchor: Move onto the outline, then click'}
+            </span>
           </>
         )}
       </div>

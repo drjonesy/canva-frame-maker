@@ -17,8 +17,14 @@ import {
   alignShapesToGuide,
   ObjectAlignType,
 } from './utils/alignment';
-import { createGuide } from './utils/guides';
-import { mirrorShape, resolveMirrorGuide } from './utils/mirror';
+import { createGuide, resolvePickedGuide } from './utils/guides';
+import { FlipDirection, flipShapes, mirrorShape } from './utils/mirror';
+import {
+  edgeMidpoint,
+  PARALLEL_EPSILON_DEG,
+  parallelRotation,
+  resolveParallelEdge,
+} from './utils/parallel';
 import {
   getShapeBounds,
   unbreakHandles,
@@ -208,6 +214,15 @@ function CanvaFrameApp() {
     return true;
   }, [shapes, dimensions, recordHistory]);
 
+  // Selected shapes references. Declared up here because the tools below —
+  // nudging, rotating, mirroring, Parallel — all read them, and a `const` used
+  // in a hook's dependency array has to exist by the time that array is built.
+  const selectedShapes = useMemo(() => {
+    return shapes.filter((s) => selectedShapeIds.includes(s.id));
+  }, [shapes, selectedShapeIds]);
+
+  const activeShape = selectedShapes[0] || null;
+
   // --- Arrow-key nudging ---
   // The step is held as typed so the field can be emptied or left mid-number
   // ("0."); every move uses the clamped value.
@@ -310,11 +325,32 @@ function CanvaFrameApp() {
     [shapes, selectedShapeIds, rotateOrigin, dimensions, recordHistory]
   );
 
+  /**
+   * Flip the selection left-for-right or top-for-bottom.
+   *
+   * The reflection is about the centre, so the bounding box stays exactly where
+   * it is and only the facing changes — unlike Mirror, which drops a reflected
+   * copy on the far side of a guide. The pivot follows the same Pivot toggle
+   * rotation uses: the whole selection flips as a block, or each shape flips in
+   * place.
+   */
+  const handleFlip = useCallback(
+    (direction: FlipDirection) => {
+      if (selectedShapeIds.length === 0) return;
+      const center = resolveRotateCenter(shapes, selectedShapeIds, rotateOrigin);
+      if (rotateOrigin === 'selection' && !center) return;
+
+      recordHistory(shapes, dimensions);
+      setShapes(flipShapes(shapes, selectedShapeIds, direction, center));
+    },
+    [shapes, selectedShapeIds, rotateOrigin, dimensions, recordHistory]
+  );
+
   // --- Mirror across a guide ---
   // The guide to reflect across is whichever was picked last, falling back to
   // the only guide on the canvas when there is exactly one.
   const mirrorGuide = useMemo(
-    () => resolveMirrorGuide(guides, selectedGuideIds),
+    () => resolvePickedGuide(guides, selectedGuideIds),
     [guides, selectedGuideIds]
   );
 
@@ -361,7 +397,98 @@ function CanvaFrameApp() {
     setLastPicked('shape');
   }, [mirrorGuide, selectedShapeIds, shapes, dimensions, recordHistory]);
 
-  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Q, W, E, M, arrows, Delete)
+  // --- Parallel: turn an edge until it runs along a guide ---
+  // The edge is the two anchor points picked under Sub-Select; the guide is
+  // resolved exactly as Mirror's is, so the two tools are driven the same way.
+  const parallelEdge = useMemo(
+    () => (activeShape ? resolveParallelEdge(activeShape, selectedPointIds) : null),
+    [activeShape, selectedPointIds]
+  );
+
+  /** Turn needed to bring the edge parallel to the guide, clockwise-positive. */
+  const parallelAngle = useMemo(() => {
+    if (!parallelEdge || !mirrorGuide) return null;
+    return parallelRotation(parallelEdge, mirrorGuide.axis);
+  }, [parallelEdge, mirrorGuide]);
+
+  const canParallel =
+    activeShape !== null &&
+    !activeShape.locked &&
+    parallelAngle !== null &&
+    Math.abs(parallelAngle) >= PARALLEL_EPSILON_DEG;
+
+  const parallelHint = useMemo(() => {
+    if (!activeShape) {
+      return 'Select a shape, then pick the two points at either end of one of its edges.';
+    }
+    if (guides.length === 0) {
+      return 'Drag a guide out of a ruler to give the edge a line to run along.';
+    }
+    if (!mirrorGuide) {
+      return 'Click a guide on the canvas to choose which one the edge should run along.';
+    }
+    if (!parallelEdge) {
+      return selectedPointIds.length > 2
+        ? 'Pick just two points — the ends of the edge to line up.'
+        : 'Switch to Sub-Select (W) and click one end of the edge, then shift-click the other.';
+    }
+    if (activeShape.locked) {
+      return 'This shape is locked. Unlock it in Layers to rotate it.';
+    }
+
+    const axis = mirrorGuide.axis === 'x' ? 'vertical' : 'horizontal';
+    const at = `${mirrorGuide.axis === 'x' ? 'X' : 'Y'} ${Math.round(
+      mirrorGuide.position
+    )}`;
+    if (parallelAngle === null || Math.abs(parallelAngle) < PARALLEL_EPSILON_DEG) {
+      return `The edge is already parallel to the ${axis} guide at ${at}.`;
+    }
+    return `Turn ${Math.abs(parallelAngle).toFixed(1)}° ${
+      parallelAngle > 0 ? 'clockwise' : 'anticlockwise'
+    } so the edge runs along the ${axis} guide at ${at}.`;
+  }, [
+    activeShape,
+    guides,
+    mirrorGuide,
+    parallelEdge,
+    parallelAngle,
+    selectedPointIds,
+  ]);
+
+  /**
+   * Rotate the selection until the picked edge is parallel to the guide.
+   *
+   * The turn pivots on the middle of the edge, so the edge stays where it is
+   * and only the rest of the shape swings; "Align to Guide" then slides it
+   * flush. It is always the shorter way round — never more than a quarter turn
+   * — because a line reversed is the same line.
+   *
+   * The point selection is left alone, so the same edge can be sent at another
+   * guide straight afterwards.
+   */
+  const handleParallel = useCallback(() => {
+    if (!canParallel || !parallelEdge || parallelAngle === null) return;
+    recordHistory(shapes, dimensions);
+    setShapes(
+      rotateShapes(
+        shapes,
+        selectedShapeIds,
+        parallelAngle,
+        edgeMidpoint(parallelEdge)
+      )
+    );
+  }, [
+    canParallel,
+    parallelEdge,
+    parallelAngle,
+    selectedShapeIds,
+    shapes,
+    dimensions,
+    recordHistory,
+  ]);
+
+  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Q, W, E, A, M, P, Shift+H/V, arrows,
+  // Delete)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -406,24 +533,28 @@ function CanvaFrameApp() {
         selectTool('directSelect');
       } else if (e.key.toLowerCase() === 'e') {
         selectTool('pen');
+      } else if (e.key.toLowerCase() === 'a') {
+        selectTool('addPoint');
       } else if (e.key.toLowerCase() === 'r') {
         setShowRulers((v) => !v);
       } else if (e.key.toLowerCase() === 'g') {
         setShowGuides((v) => !v);
       } else if (e.key.toLowerCase() === 'm') {
         handleMirror();
+      } else if (e.key.toLowerCase() === 'p') {
+        handleParallel();
+      } else if (e.shiftKey && e.key.toLowerCase() === 'h') {
+        // Shift-qualified so the bare letters stay free for future tools, and
+        // so a stray keypress cannot flip a shape without meaning to.
+        handleFlip('horizontal');
+      } else if (e.shiftKey && e.key.toLowerCase() === 'v') {
+        handleFlip('vertical');
       } else if (nudgeDir) {
         // Without this the workspace scrolls under the arrow keys instead.
         e.preventDefault();
         handleNudge(nudgeDir, e.shiftKey);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (lastPicked === 'guide' && selectedGuideIds.length > 0) {
-          handleDeleteSelectedGuides();
-        } else if (selectedPointIds.length > 0) {
-          handleDeleteSelectedPoints();
-        } else if (selectedShapeIds.length > 0) {
-          handleDeleteSelectedShapes();
-        }
+        handleDeleteSelection();
       }
     };
 
@@ -437,18 +568,13 @@ function CanvaFrameApp() {
     selectTool,
     handleNudge,
     handleMirror,
+    handleParallel,
+    handleFlip,
     selectedPointIds,
     selectedShapeIds,
     selectedGuideIds,
     lastPicked,
   ]);
-
-  // Selected shapes references
-  const selectedShapes = useMemo(() => {
-    return shapes.filter((s) => selectedShapeIds.includes(s.id));
-  }, [shapes, selectedShapeIds]);
-
-  const activeShape = selectedShapes[0] || null;
 
   const selectedPoint = useMemo(() => {
     if (!activeShape || selectedPointIds.length !== 1) return null;
@@ -712,6 +838,24 @@ function CanvaFrameApp() {
     );
   };
 
+  // Joining an in-progress pen path back to its first anchor. Unlike the
+  // open/closed toggle this also leaves the pen: a closed frame is finished,
+  // and staying in the tool would only scatter stray points over it.
+  const canClosePath =
+    currentTool === 'pen' &&
+    activeShape !== null &&
+    !activeShape.closed &&
+    activeShape.points.length >= 3;
+
+  const handleClosePath = () => {
+    if (!canClosePath || !activeShape) return;
+    recordHistory(shapes, dimensions);
+    setShapes((prev) =>
+      prev.map((s) => (s.id === activeShape.id ? { ...s, closed: true } : s))
+    );
+    setCurrentTool('select');
+  };
+
   const handleUpdatePointCoords = (x: number, y: number) => {
     if (!activeShape || selectedPointIds.length !== 1) return;
     const ptId = selectedPointIds[0];
@@ -954,6 +1098,24 @@ function CanvaFrameApp() {
     setSelectedPointIds([]);
   };
 
+  // What Delete (and the toolbar's trash button) acts on: the most recently
+  // picked thing wins, so a stale guide selection cannot swallow a delete
+  // meant for the shape.
+  const deleteTarget: 'guide' | 'point' | 'shape' | null =
+    lastPicked === 'guide' && selectedGuideIds.length > 0
+      ? 'guide'
+      : selectedPointIds.length > 0
+      ? 'point'
+      : selectedShapeIds.length > 0
+      ? 'shape'
+      : null;
+
+  const handleDeleteSelection = () => {
+    if (deleteTarget === 'guide') handleDeleteSelectedGuides();
+    else if (deleteTarget === 'point') handleDeleteSelectedPoints();
+    else if (deleteTarget === 'shape') handleDeleteSelectedShapes();
+  };
+
   const handleRenameLayer = (id: string, newName: string) => {
     setShapes((prev) =>
       prev.map((s) => (s.id === id ? { ...s, name: newName } : s))
@@ -988,6 +1150,8 @@ function CanvaFrameApp() {
         onRedo={handleRedo}
         canUndo={history.past.length > 0}
         canRedo={history.future.length > 0}
+        onDelete={handleDeleteSelection}
+        deleteTarget={deleteTarget}
         zoom={zoom}
         onZoomChange={setZoom}
         onFitToScreen={() => setFitSignal((n) => n + 1)}
@@ -1005,6 +1169,9 @@ function CanvaFrameApp() {
           onMirror={handleMirror}
           canMirror={canMirror}
           mirrorHint={mirrorHint}
+          onParallel={handleParallel}
+          canParallel={canParallel}
+          parallelHint={parallelHint}
         />
 
         {/* Interactive Canvas Area */}
@@ -1081,18 +1248,22 @@ function CanvaFrameApp() {
           />
 
           {/* Floating Pen & Sub-Select Inspector (Bottom-Center) */}
-          {(currentTool === 'pen' || currentTool === 'directSelect') && (
+          {(currentTool === 'pen' ||
+            currentTool === 'directSelect' ||
+            currentTool === 'addPoint') && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 animate-in fade-in slide-in-from-bottom-2 duration-150">
               <PenInspector
                 selectedPoint={selectedPoint}
                 selectedPointIds={selectedPointIds}
                 totalPointsInPath={activeShape?.points.length || 0}
                 isClosed={activeShape?.closed || false}
+                canClosePath={canClosePath}
                 onUpdatePointType={handleUpdatePointType}
                 onUnbreakHandles={handleUnbreakHandles}
                 onAlignPoints={handleAlignPoints}
                 onDeletePoint={handleDeleteSelectedPoints}
                 onToggleClosePath={handleToggleClosePath}
+                onClosePath={handleClosePath}
                 onUpdatePointCoords={handleUpdatePointCoords}
               />
             </div>
@@ -1203,7 +1374,9 @@ function CanvaFrameApp() {
               },
               {
                 id: 'rotate',
-                label: 'Rotate',
+                // "Transform" rather than "Rotate": the tab also holds Flip,
+                // which nobody would go looking for under a rotation heading.
+                label: 'Transform',
                 icon: <RotateCw className="w-3.5 h-3.5" />,
                 badge: (
                   <span className="text-[10px] font-mono text-gray-400 dark:text-neutral-500">
@@ -1219,6 +1392,11 @@ function CanvaFrameApp() {
                     onAngleTextChange={setRotateAngleText}
                     onOriginChange={setRotateOrigin}
                     onRotate={handleRotate}
+                    onFlip={handleFlip}
+                    parallelAngle={parallelAngle}
+                    canParallel={canParallel}
+                    parallelHint={parallelHint}
+                    onParallel={handleParallel}
                   />
                 ),
               },

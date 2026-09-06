@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { ShapePresetType, ToolMode } from '../types';
 import { useTheme } from '../context/ThemeContext';
+import { ParallelIcon } from './ParallelIcon';
+import { AddPointIcon } from './AddPointIcon';
 import {
   MousePointer2,
   PenTool,
@@ -24,6 +26,10 @@ interface Props {
   canMirror: boolean;
   /** What Mirror will do, or what is still missing before it can. */
   mirrorHint: string;
+  onParallel: () => void;
+  canParallel: boolean;
+  /** What Parallel will do, or what is still missing before it can. */
+  parallelHint: string;
 }
 
 /**
@@ -179,6 +185,9 @@ export const ToolRail: React.FC<Props> = ({
   onMirror,
   canMirror,
   mirrorHint,
+  onParallel,
+  canParallel,
+  parallelHint,
 }) => {
   const { isDark } = useTheme();
   const [shapesOpen, setShapesOpen] = useState(false);
@@ -220,6 +229,19 @@ export const ToolRail: React.FC<Props> = ({
         <PenTool className="w-4 h-4" />
       </RailButton>
 
+      {/* Add Anchor: the Pen's other half. The Pen extends a path from its end,
+          which a closed outline no longer has — this one splits a segment
+          wherever you click on it instead. */}
+      <RailButton
+        label="Add Anchor Point"
+        shortcut="A"
+        description="Click an outline to drop a point on it"
+        active={currentTool === 'addPoint'}
+        onClick={() => onSelectTool('addPoint')}
+      >
+        <AddPointIcon className="w-4 h-4" />
+      </RailButton>
+
       <div className={`w-6 my-1 border-t ${isDark ? 'border-[#2A2A2A]' : 'border-gray-200'}`} />
 
       {/* Mirror is an action, not a mode: it reflects the selection across the
@@ -233,6 +255,18 @@ export const ToolRail: React.FC<Props> = ({
         onClick={onMirror}
       >
         <MirrorIcon className="w-4 h-4" />
+      </RailButton>
+
+      {/* Parallel, likewise an action: it turns the selection where it stands
+          until the picked edge runs along the picked guide. */}
+      <RailButton
+        label="Parallel to Guide"
+        shortcut="P"
+        description={parallelHint}
+        disabled={!canParallel}
+        onClick={onParallel}
+      >
+        <ParallelIcon className="w-4 h-4" />
       </RailButton>
 
       {/* Preset shapes, as a flyout so the rail stays one icon wide. */}

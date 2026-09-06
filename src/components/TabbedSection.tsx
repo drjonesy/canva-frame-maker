@@ -58,7 +58,7 @@ export const TabbedSection: React.FC<Props> = ({
                   setActiveId(tab.id);
                   setOpen(true);
                 }}
-                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-semibold transition-colors cursor-pointer ${
+                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-semibold whitespace-nowrap transition-colors cursor-pointer ${
                   selected
                     ? isDark
                       ? 'bg-[#2E2E2E] text-white shadow-sm'

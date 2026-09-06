@@ -46,6 +46,7 @@ export type ToolMode =
   | 'select'       // Object selection & transform
   | 'directSelect' // Point & handle manipulation (sub-selection)
   | 'pen'          // Pen tool drawing
+  | 'addPoint'     // Drop anchors onto an existing outline
   | 'pan';         // Canvas pan
 
 export type ShapePresetType = 

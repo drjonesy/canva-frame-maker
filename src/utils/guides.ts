@@ -31,6 +31,28 @@ export function guideExistsAt(
 }
 
 /**
+ * The guide a tool that needs exactly one line acts on.
+ *
+ * The most recently picked selected guide wins — `selectedGuideIds` is appended
+ * to as guides are shift-clicked, so the last entry is the latest choice. With
+ * nothing selected a lone guide is used, since there is then no ambiguity; with
+ * several guides and no selection there is no way to tell which was meant.
+ *
+ * Mirror and Parallel both read one guide this way. `AlignTab` resolves per
+ * axis instead, since it drives an x control and a y control side by side.
+ */
+export function resolvePickedGuide(
+  guides: Guide[],
+  selectedGuideIds: string[]
+): Guide | null {
+  for (let i = selectedGuideIds.length - 1; i >= 0; i--) {
+    const picked = guides.find((g) => g.id === selectedGuideIds[i]);
+    if (picked) return picked;
+  }
+  return guides.length === 1 ? guides[0] : null;
+}
+
+/**
  * Ruler tick spacing, in canvas units.
  *
  * The step is the smallest "nice" number whose on-screen spacing clears

@@ -9,24 +9,47 @@ import {
   Trash2,
   Lock,
   Unlock,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
+  Spline,
   AlignStartVertical,
   AlignCenterVertical,
   AlignEndVertical,
+  AlignStartHorizontal,
+  AlignCenterHorizontal,
+  AlignEndHorizontal,
 } from 'lucide-react';
+
+/**
+ * The same six alignments, in the same order and with the same icons, as the
+ * Align Objects row on the Align tab — the operation is the one the tab does,
+ * only on anchor points rather than whole shapes.
+ */
+const POINT_ALIGN_BUTTONS: {
+  type: PointAlignType;
+  title: string;
+  icon: React.ReactNode;
+}[] = [
+  { type: 'left', title: 'Align dots Left', icon: <AlignStartVertical className="w-3.5 h-3.5" /> },
+  { type: 'centerX', title: 'Align dots Center Horizontally', icon: <AlignCenterVertical className="w-3.5 h-3.5" /> },
+  { type: 'right', title: 'Align dots Right', icon: <AlignEndVertical className="w-3.5 h-3.5" /> },
+  { type: 'top', title: 'Align dots Top', icon: <AlignStartHorizontal className="w-3.5 h-3.5" /> },
+  { type: 'centerY', title: 'Align dots Middle Vertically', icon: <AlignCenterHorizontal className="w-3.5 h-3.5" /> },
+  { type: 'bottom', title: 'Align dots Bottom', icon: <AlignEndHorizontal className="w-3.5 h-3.5" /> },
+];
 
 interface Props {
   selectedPoint: PathPoint | null;
   selectedPointIds: string[];
   totalPointsInPath: number;
   isClosed: boolean;
+  /** True while the pen is drawing a path that has enough points to close. */
+  canClosePath: boolean;
   onUpdatePointType: (type: 'straight' | 'rounded' | 'break') => void;
   onUnbreakHandles: () => void;
   onAlignPoints: (alignType: PointAlignType) => void;
   onDeletePoint: () => void;
   onToggleClosePath: () => void;
+  /** Joins the path up and leaves the pen — the drawing session is done. */
+  onClosePath: () => void;
   onUpdatePointCoords: (x: number, y: number) => void;
 }
 
@@ -35,14 +58,32 @@ export const PenInspector: React.FC<Props> = ({
   selectedPointIds,
   totalPointsInPath,
   isClosed,
+  canClosePath,
   onUpdatePointType,
   onUnbreakHandles,
   onAlignPoints,
   onDeletePoint,
   onToggleClosePath,
+  onClosePath,
   onUpdatePointCoords,
 }) => {
   const { isDark } = useTheme();
+
+  // The one action a half-drawn path always needs within reach. It rides in
+  // both layouts below, because the point selection it would otherwise depend
+  // on comes and goes as anchors are dropped.
+  const closeButton = canClosePath ? (
+    <button
+      type="button"
+      onClick={onClosePath}
+      title="Close the shape (Enter, or click the first anchor)"
+      className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold text-white bg-gradient-to-r from-[#F43F5E] to-[#FF5722] shadow-xs hover:opacity-90 transition-opacity"
+    >
+      <Spline className="w-3.5 h-3.5" />
+      Close Shape
+      <span className="font-mono text-[10px] opacity-75">⏎</span>
+    </button>
+  ) : null;
 
   if (!selectedPoint && selectedPointIds.length === 0) {
     return (
@@ -50,7 +91,12 @@ export const PenInspector: React.FC<Props> = ({
         isDark ? 'bg-[#1A1A1A]/95 border-[#2A2A2A] text-neutral-400' : 'bg-white/95 border-gray-200 text-gray-600'
       }`}>
         <CircleDot className="w-4 h-4 text-[#F43F5E]" />
-        <span>Click or drag on the canvas to add anchor points & Bézier curves</span>
+        <span>
+          {canClosePath
+            ? 'Click the first anchor, or use Close Shape, to join the path'
+            : 'Click or drag on the canvas to add anchor points & Bézier curves'}
+        </span>
+        {closeButton}
       </div>
     );
   }
@@ -165,78 +211,21 @@ export const PenInspector: React.FC<Props> = ({
           <span className={`text-[10px] font-mono uppercase mr-1 ${
             isDark ? 'text-neutral-400' : 'text-gray-500'
           }`}>Align:</span>
-          <button
-            type="button"
-            onClick={() => onAlignPoints('left')}
-            title="Align dots Left"
-            className={`p-1 rounded border ${
-              isDark
-                ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-300 hover:text-white border-[#2A2A2A]'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border-gray-200'
-            }`}
-          >
-            <AlignLeft className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onAlignPoints('centerX')}
-            title="Align dots Center Horizontally"
-            className={`p-1 rounded border ${
-              isDark
-                ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-300 hover:text-white border-[#2A2A2A]'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border-gray-200'
-            }`}
-          >
-            <AlignCenter className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onAlignPoints('right')}
-            title="Align dots Right"
-            className={`p-1 rounded border ${
-              isDark
-                ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-300 hover:text-white border-[#2A2A2A]'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border-gray-200'
-            }`}
-          >
-            <AlignRight className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onAlignPoints('top')}
-            title="Align dots Top"
-            className={`p-1 rounded border ${
-              isDark
-                ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-300 hover:text-white border-[#2A2A2A]'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border-gray-200'
-            }`}
-          >
-            <AlignStartVertical className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onAlignPoints('centerY')}
-            title="Align dots Middle Vertically"
-            className={`p-1 rounded border ${
-              isDark
-                ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-300 hover:text-white border-[#2A2A2A]'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border-gray-200'
-            }`}
-          >
-            <AlignCenterVertical className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onAlignPoints('bottom')}
-            title="Align dots Bottom"
-            className={`p-1 rounded border ${
-              isDark
-                ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-300 hover:text-white border-[#2A2A2A]'
-                : 'bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border-gray-200'
-            }`}
-          >
-            <AlignEndVertical className="w-3.5 h-3.5" />
-          </button>
+          {POINT_ALIGN_BUTTONS.map((b) => (
+            <button
+              key={b.type}
+              type="button"
+              onClick={() => onAlignPoints(b.type)}
+              title={b.title}
+              className={`p-1 rounded border ${
+                isDark
+                  ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-300 hover:text-white border-[#2A2A2A]'
+                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700 hover:text-gray-900 border-gray-200'
+              }`}
+            >
+              {b.icon}
+            </button>
+          ))}
         </div>
       )}
 
@@ -276,7 +265,9 @@ export const PenInspector: React.FC<Props> = ({
 
       {/* Path state and Delete */}
       <div className="flex items-center gap-2">
-        {totalPointsInPath >= 3 && (
+        {closeButton}
+
+        {totalPointsInPath >= 3 && !canClosePath && (
           <button
             type="button"
             onClick={onToggleClosePath}

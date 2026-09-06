@@ -6,6 +6,7 @@ import {
   Download,
   Undo2,
   Redo2,
+  Trash2,
   ZoomIn,
   ZoomOut,
   Maximize,
@@ -27,6 +28,9 @@ interface Props {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  onDelete: () => void;
+  /** What Delete would remove right now — drives the trash button's tooltip. */
+  deleteTarget: 'guide' | 'point' | 'shape' | null;
   zoom: number;
   onZoomChange: (newZoom: number) => void;
   onFitToScreen: () => void;
@@ -42,6 +46,8 @@ export const Toolbar: React.FC<Props> = ({
   onRedo,
   canUndo,
   canRedo,
+  onDelete,
+  deleteTarget,
   zoom,
   onZoomChange,
   onFitToScreen,
@@ -205,6 +211,33 @@ export const Toolbar: React.FC<Props> = ({
             }`}
           >
             <Redo2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Delete — the Delete key, as a button */}
+        <div className={`flex items-center p-0.5 rounded border ${
+          isDark ? 'bg-[#242424] border-[#2A2A2A]' : 'bg-gray-100 border-gray-200'
+        }`}>
+          <button
+            type="button"
+            disabled={deleteTarget === null}
+            onClick={onDelete}
+            title={
+              deleteTarget === 'guide'
+                ? 'Delete selected guides (Del)'
+                : deleteTarget === 'point'
+                ? 'Delete selected points (Del)'
+                : deleteTarget === 'shape'
+                ? 'Delete selected shapes (Del)'
+                : 'Delete (Del) — nothing selected'
+            }
+            className={`p-1 rounded disabled:opacity-20 transition-colors ${
+              isDark
+                ? 'text-neutral-300 enabled:hover:bg-red-500/15 enabled:hover:text-red-400'
+                : 'text-gray-700 enabled:hover:bg-red-50 enabled:hover:text-red-600'
+            }`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
