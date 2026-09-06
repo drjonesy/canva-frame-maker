@@ -17,7 +17,7 @@ pnpm install
 pnpm dev
 ```
 
-The dev server listens on http://localhost:3000.
+**Dev Port:** http://localhost:3000.
 
 ## Scripts
 
