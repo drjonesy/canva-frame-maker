@@ -1,0 +1,6 @@
+{
+  "name": "Canva Frame Maker",
+  "description": "Convert images and custom vector shapes into importable Canva Frames with pen bezier tools, boolean operations, and overlay validation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
