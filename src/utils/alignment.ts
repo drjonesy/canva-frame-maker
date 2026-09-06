@@ -1,4 +1,4 @@
-import { PathPoint, VectorShape } from '../types';
+import { GuideAlignType, PathPoint, VectorShape } from '../types';
 import { getShapeBounds } from './bezier';
 
 export type ObjectAlignType =
@@ -136,7 +136,58 @@ export function alignShapes(
   });
 }
 
-function translateShape(shape: VectorShape, dx: number, dy: number): VectorShape {
+/**
+ * Align every selected shape to a guide.
+ *
+ * Each shape moves on its own — the same rule `alignShapes` follows, and the
+ * one every vector editor uses when the target is a guide or an artboard
+ * rather than another object. A selection aligned to a guide therefore ends
+ * up stacked along it, not carried across as a block.
+ */
+export function alignShapesToGuide(
+  shapes: VectorShape[],
+  selectedIds: string[],
+  alignType: GuideAlignType,
+  position: number
+): VectorShape[] {
+  if (selectedIds.length === 0) return shapes;
+
+  return shapes.map((shape) => {
+    if (!selectedIds.includes(shape.id)) return shape;
+    const b = getShapeBounds(shape);
+    let dx = 0;
+    let dy = 0;
+
+    switch (alignType) {
+      case 'left':
+        dx = position - b.minX;
+        break;
+      case 'centerX':
+        dx = position - (b.minX + b.maxX) / 2;
+        break;
+      case 'right':
+        dx = position - b.maxX;
+        break;
+      case 'top':
+        dy = position - b.minY;
+        break;
+      case 'centerY':
+        dy = position - (b.minY + b.maxY) / 2;
+        break;
+      case 'bottom':
+        dy = position - b.maxY;
+        break;
+    }
+
+    return translateShape(shape, dx, dy);
+  });
+}
+
+export function translateShape(
+  shape: VectorShape,
+  dx: number,
+  dy: number
+): VectorShape {
   if (dx === 0 && dy === 0) return shape;
 
   function translatePoints(pts: PathPoint[]): PathPoint[] {

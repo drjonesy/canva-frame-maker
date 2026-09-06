@@ -6,6 +6,60 @@ export function generateShapeId(): string {
   return `shape_${Date.now()}_${shapeIdCounter++}`;
 }
 
+
+/**
+ * Converts a corner radius percentage into pixels for a given box.
+ *
+ * 100% is a fully rounded corner — half the shorter side, the point at which
+ * adjacent corners meet. Anchoring to the shorter side means stretching one
+ * axis leaves the radius alone, so a stadium stays a stadium.
+ */
+export function cornerRadiusPx(pct: number, width: number, height: number): number {
+  const clamped = Math.max(0, Math.min(100, pct));
+  return (clamped / 100) * (Math.min(width, height) / 2);
+}
+
+/**
+ * Corner points for an axis-aligned rectangle.
+ *
+ * A radius of 0 gives four plain corners; anything larger rounds each one with
+ * the standard circle-to-bezier constant. The radius is clamped to half the
+ * shorter side, which is the point at which the corners meet.
+ */
+export function buildRectPoints(
+  id: string,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+  radius: number
+): PathPoint[] {
+  const w = maxX - minX;
+  const h = maxY - minY;
+  const r = Math.max(0, Math.min(radius, Math.min(w, h) / 2));
+
+  if (r <= 0) {
+    return [
+      { id: `${id}_p0`, x: minX, y: minY, type: 'straight' },
+      { id: `${id}_p1`, x: maxX, y: minY, type: 'straight' },
+      { id: `${id}_p2`, x: maxX, y: maxY, type: 'straight' },
+      { id: `${id}_p3`, x: minX, y: maxY, type: 'straight' },
+    ];
+  }
+
+  const k = r * 0.55228;
+  return [
+    { id: `${id}_p0`, x: minX + r, y: minY, type: 'break', cp1: { x: minX + r - k, y: minY } },
+    { id: `${id}_p1`, x: maxX - r, y: minY, type: 'break', cp2: { x: maxX - r + k, y: minY } },
+    { id: `${id}_p2`, x: maxX, y: minY + r, type: 'break', cp1: { x: maxX, y: minY + r - k } },
+    { id: `${id}_p3`, x: maxX, y: maxY - r, type: 'break', cp2: { x: maxX, y: maxY - r + k } },
+    { id: `${id}_p4`, x: maxX - r, y: maxY, type: 'break', cp1: { x: maxX - r + k, y: maxY } },
+    { id: `${id}_p5`, x: minX + r, y: maxY, type: 'break', cp2: { x: minX + r - k, y: maxY } },
+    { id: `${id}_p6`, x: minX, y: maxY - r, type: 'break', cp1: { x: minX, y: maxY - r + k } },
+    { id: `${id}_p7`, x: minX, y: minY + r, type: 'break', cp2: { x: minX, y: minY + r - k } },
+  ];
+}
+
 export function createPresetShape(
   type: ShapePresetType,
   cx: number,
@@ -17,85 +71,13 @@ export function createPresetShape(
 
   let points: PathPoint[] = [];
   let name = 'Shape';
+  let isRect = false;
 
   switch (type) {
     case 'rect': {
       name = 'Rectangle Frame';
-      points = [
-        { id: `${id}_p0`, x: cx - half, y: cy - half, type: 'straight' },
-        { id: `${id}_p1`, x: cx + half, y: cy - half, type: 'straight' },
-        { id: `${id}_p2`, x: cx + half, y: cy + half, type: 'straight' },
-        { id: `${id}_p3`, x: cx - half, y: cy + half, type: 'straight' },
-      ];
-      break;
-    }
-
-    case 'roundedRect': {
-      name = 'Rounded Rect Frame';
-      const r = size * 0.18;
-      const k = r * 0.55228; // standard bezier circle approximation
-      points = [
-        // Top edge
-        {
-          id: `${id}_p0`,
-          x: cx - half + r,
-          y: cy - half,
-          type: 'break',
-          cp1: { x: cx - half + r - k, y: cy - half },
-        },
-        {
-          id: `${id}_p1`,
-          x: cx + half - r,
-          y: cy - half,
-          type: 'break',
-          cp2: { x: cx + half - r + k, y: cy - half },
-        },
-        // Right edge
-        {
-          id: `${id}_p2`,
-          x: cx + half,
-          y: cy - half + r,
-          type: 'break',
-          cp1: { x: cx + half, y: cy - half + r - k },
-        },
-        {
-          id: `${id}_p3`,
-          x: cx + half,
-          y: cy + half - r,
-          type: 'break',
-          cp2: { x: cx + half, y: cy + half - r + k },
-        },
-        // Bottom edge
-        {
-          id: `${id}_p4`,
-          x: cx + half - r,
-          y: cy + half,
-          type: 'break',
-          cp1: { x: cx + half - r + k, y: cy + half },
-        },
-        {
-          id: `${id}_p5`,
-          x: cx - half + r,
-          y: cy + half,
-          type: 'break',
-          cp2: { x: cx - half + r - k, y: cy + half },
-        },
-        // Left edge
-        {
-          id: `${id}_p6`,
-          x: cx - half,
-          y: cy + half - r,
-          type: 'break',
-          cp1: { x: cx - half, y: cy + half - r + k },
-        },
-        {
-          id: `${id}_p7`,
-          x: cx - half,
-          y: cy - half + r,
-          type: 'break',
-          cp2: { x: cx - half, y: cy - half + r - k },
-        },
-      ];
+      points = buildRectPoints(id, cx - half, cy - half, cx + half, cy + half, 0);
+      isRect = true;
       break;
     }
 
@@ -334,10 +316,11 @@ export function createPresetShape(
     closed: true,
     fillColor: '#6366f1',
     strokeColor: '#4338ca',
-    strokeWidth: 2,
+    strokeWidth: 0,
     opacity: 1,
     visible: true,
     locked: false,
     isFrameCandidate: true,
+    ...(isRect ? { cornerRadiusPct: 0 } : {}),
   };
 }

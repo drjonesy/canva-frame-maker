@@ -1,6 +1,7 @@
 import { PDFDocument, rgb } from 'pdf-lib';
 import { CanvasDimensions, VectorShape } from '../types';
 import { shapeToSvgPath } from './bezier';
+import svgPath from 'svgpath';
 
 /**
  * Standard Canva Frame placeholder graphic (the classic rolling hills and cloud SVG)
@@ -63,6 +64,38 @@ export function generateCanvaPlaceholderSvg(
 }
 
 /**
+ * Bounding box of path data, control points included. There is no artboard any
+ * more, so the export is framed by the artwork itself. Control points make the
+ * box a conservative superset of the curve, which cannot clip the shape.
+ */
+function pathBounds(d: string): { minX: number; minY: number; width: number; height: number } {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  svgPath(d)
+    .unarc()
+    .unshort()
+    .abs()
+    .iterate((seg) => {
+      for (let i = 1; i + 1 < seg.length; i += 2) {
+        const x = seg[i] as number;
+        const y = seg[i + 1] as number;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    });
+
+  if (!isFinite(minX) || !isFinite(minY)) {
+    return { minX: 0, minY: 0, width: 0, height: 0 };
+  }
+  return { minX, minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
  * Generate full SVG string for exporting
  */
 export function exportShapesToSvg(
@@ -89,16 +122,20 @@ export function exportShapesToSvg(
     );
   }
 
-  // Standard multi-shape SVG
-  let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dimensions.width} ${dimensions.height}" width="${dimensions.width}" height="${dimensions.height}">\n`;
+  if (!combinedPath) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dimensions.width} ${dimensions.height}" width="${dimensions.width}" height="${dimensions.height}"></svg>`;
+  }
 
-  visibleShapes.forEach((s) => {
-    const d = shapeToSvgPath(s);
-    svgContent += `  <path d="${d}" fill="${s.fillColor}" stroke="${s.strokeColor}" stroke-width="${s.strokeWidth}" opacity="${s.opacity}" id="${s.id}" fill-rule="evenodd" />\n`;
-  });
+  // Everything visible on the canvas as ONE object, cropped to the artwork:
+  // a single compound path, no background rect, no stroke and no artboard box.
+  const bounds = pathBounds(combinedPath);
+  const framed = svgPath(combinedPath).translate(-bounds.minX, -bounds.minY).round(3).toString();
+  const w = Math.max(1, Math.round(bounds.width));
+  const h = Math.max(1, Math.round(bounds.height));
 
-  svgContent += `</svg>`;
-  return svgContent;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">
+  <path d="${framed}" fill="#000000" fill-rule="evenodd" id="canva_frame" />
+</svg>`;
 }
 
 /**
@@ -110,7 +147,6 @@ export async function exportToCanvaPdf(
   dimensions: CanvasDimensions
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([dimensions.width, dimensions.height]);
 
   // Combine SVG path of visible shapes
   const visibleShapes = shapes.filter((s) => s.visible && s.points.length >= 2);
@@ -120,17 +156,28 @@ export async function exportToCanvaPdf(
   });
   combinedPath = combinedPath.trim();
 
+  // Size the page to the artwork rather than to a canvas that no longer exists.
+  const bounds = combinedPath
+    ? pathBounds(combinedPath)
+    : { minX: 0, minY: 0, width: dimensions.width, height: dimensions.height };
+  const pageW = Math.max(1, Math.round(bounds.width));
+  const pageH = Math.max(1, Math.round(bounds.height));
+  const page = pdfDoc.addPage([pageW, pageH]);
+
   if (combinedPath) {
     try {
+      const framed = svgPath(combinedPath)
+        .translate(-bounds.minX, -bounds.minY)
+        .round(3)
+        .toString();
       // In PDF coordinate space, Y starts from bottom-left (0,0)
       // pdf-lib drawSvgPath draws SVG path data with scale and position!
-      page.drawSvgPath(combinedPath, {
+      page.drawSvgPath(framed, {
         x: 0,
-        y: dimensions.height, // anchor from top
+        y: pageH, // anchor from top
         scale: 1,
-        color: rgb(0.39, 0.4, 0.95), // #6366f1
-        borderWidth: 1,
-        borderColor: rgb(0.26, 0.22, 0.79),
+        color: rgb(0, 0, 0),
+        borderWidth: 0,
       });
     } catch (e) {
       console.warn('drawSvgPath in pdf-lib warning, fallback to shapes:', e);

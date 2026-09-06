@@ -29,6 +29,9 @@ export interface VectorShape {
   locked: boolean;
   // Optional compound paths (holes or sub-polygons)
   subPaths?: PathPoint[][];
+  // Present on rectangles: corner radius as 0-100% of half the shorter side,
+  // so the corners stay put when one axis is stretched
+  cornerRadiusPct?: number;
   // Transformed origin or bounds
   isFrameCandidate?: boolean;
 }
@@ -47,7 +50,6 @@ export type ToolMode =
 
 export type ShapePresetType = 
   | 'rect'
-  | 'roundedRect'
   | 'circle'
   | 'triangle'
   | 'star'
@@ -82,6 +84,25 @@ export type ObjectAlignType =
   | 'distributeV';
 
 export type PointAlignType =
+  | 'left'
+  | 'centerX'
+  | 'right'
+  | 'top'
+  | 'centerY'
+  | 'bottom';
+
+/** A vertical guide lives on the `x` axis; a horizontal guide on `y`. */
+export type GuideAxis = 'x' | 'y';
+
+export interface Guide {
+  id: string;
+  axis: GuideAxis;
+  /** Canvas coordinate the line sits at, on the guide's own axis. */
+  position: number;
+}
+
+/** Where a shape's bounding box meets the guide. */
+export type GuideAlignType =
   | 'left'
   | 'centerX'
   | 'right'

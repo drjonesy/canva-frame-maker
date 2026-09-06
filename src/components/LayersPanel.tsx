@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { VectorShape } from '../types';
 import { pointsToSvgPath } from '../utils/bezier';
 import { useTheme } from '../context/ThemeContext';
+import { CollapsibleSection } from './CollapsibleSection';
 import {
   Eye,
   EyeOff,
@@ -57,28 +58,18 @@ export const LayersPanel: React.FC<Props> = ({
   const reversedShapes = [...shapes].reverse();
 
   return (
-    <div className={`w-64 border-l flex flex-col h-full select-none transition-colors ${
-      isDark ? 'bg-[#1A1A1A] border-[#2A2A2A] text-neutral-200' : 'bg-white border-gray-200 text-gray-800'
-    }`}>
-      {/* Panel Header */}
-      <div className={`px-4 py-3 border-b flex items-center justify-between ${
-        isDark ? 'border-[#2A2A2A]' : 'border-gray-200'
-      }`}>
-        <div className="flex items-center gap-2">
-          <LayersIcon className="w-4 h-4 text-[#F43F5E]" />
-          <span className={`text-xs font-semibold uppercase tracking-wider ${
-            isDark ? 'text-neutral-300' : 'text-gray-700'
-          }`}>
-            Layers ({shapes.length})
-          </span>
-        </div>
+    <CollapsibleSection
+      title={`Layers (${shapes.length})`}
+      icon={<LayersIcon className="w-4 h-4 text-[#F43F5E]" />}
+      badge={
         <span className={`text-[11px] ${isDark ? 'text-neutral-400' : 'text-gray-500'}`}>
           {selectedShapeIds.length} selected
         </span>
-      </div>
-
-      {/* Layers List */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-1">
+      }
+    >
+      {/* Layers List. Capped so a long list scrolls inside its own block
+          instead of pushing every other section off the column. */}
+      <div className="max-h-72 overflow-y-auto space-y-1">
         {reversedShapes.length === 0 ? (
           <div className={`p-6 text-center text-xs ${isDark ? 'text-neutral-500' : 'text-gray-400'}`}>
             No shape layers yet. Add a preset shape or use the Pen Tool.
@@ -254,6 +245,6 @@ export const LayersPanel: React.FC<Props> = ({
           })
         )}
       </div>
-    </div>
+    </CollapsibleSection>
   );
 };

@@ -65,7 +65,7 @@ export const ExportModal: React.FC<Props> = ({
 
   const handleDownloadSvg = () => {
     if (overlayResult.hasOverlay) return;
-    const svgStr = exportShapesToSvg(shapes, dimensions, true);
+    const svgStr = exportShapesToSvg(shapes, dimensions, false);
     downloadFile(
       svgStr,
       `canva_frame_${Date.now()}.svg`,
@@ -75,7 +75,7 @@ export const ExportModal: React.FC<Props> = ({
 
   const handleCopySvg = () => {
     if (overlayResult.hasOverlay) return;
-    const svgStr = exportShapesToSvg(shapes, dimensions, true);
+    const svgStr = exportShapesToSvg(shapes, dimensions, false);
     navigator.clipboard.writeText(svgStr);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);

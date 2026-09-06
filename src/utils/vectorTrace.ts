@@ -1,4 +1,7 @@
-import { PathPoint, Point2D, VectorShape } from '../types';
+import { BinaryImageConverter } from 'vectortracer';
+import svgPath from 'svgpath';
+import { PathPoint, PointType, Point2D, VectorShape } from '../types';
+import { getShapeBounds, sampleCubicBezier } from './bezier';
 import { generateShapeId } from './shapePresets';
 
 export interface ImageTraceOptions {
@@ -16,6 +19,462 @@ export interface TraceResult {
 }
 
 /**
+ * Reads an SVG's intrinsic pixel size, ignoring percentage widths that some
+ * design apps emit ("100%" would otherwise parse as 100px).
+ */
+function readSvgSize(svgEl: Element): { width: number; height: number } {
+  const viewBox = (svgEl.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+  if (viewBox.length === 4 && viewBox[2] > 0 && viewBox[3] > 0) {
+    return { width: Math.round(viewBox[2]), height: Math.round(viewBox[3]) };
+  }
+
+  const parseLen = (value: string | null) => {
+    if (!value || value.includes('%')) return 0;
+    const n = parseFloat(value);
+    return isNaN(n) || n <= 0 ? 0 : Math.round(n);
+  };
+
+  return {
+    width: parseLen(svgEl.getAttribute('width')) || 1080,
+    height: parseLen(svgEl.getAttribute('height')) || 1080,
+  };
+}
+
+/**
+ * Produces a raster image source from an SVG that carries no usable vector
+ * geometry. Design tools (Affinity, Illustrator) routinely export a placed
+ * bitmap wrapped in an <svg>, so prefer the embedded pixels when there is a
+ * single data-URI <image>; otherwise render the whole document to a canvas.
+ */
+export async function svgToRasterSource(svgText: string): Promise<string> {
+  const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+  const svgEl = doc.querySelector('svg');
+
+  if (!svgEl || doc.querySelector('parsererror')) {
+    throw new Error('Invalid SVG file. No <svg> tag found.');
+  }
+
+  const images = Array.from(doc.querySelectorAll('image'));
+  if (images.length === 1) {
+    const href =
+      images[0].getAttribute('href') || images[0].getAttribute('xlink:href') || '';
+    if (href.startsWith('data:image/')) return href;
+  }
+
+  // Rasterize the document itself. Give the clone an explicit pixel size so the
+  // <img> has an intrinsic size even when the source uses percentages.
+  const { width, height } = readSvgSize(svgEl);
+  const maxDim = 2048;
+  const scale = Math.min(1, maxDim / Math.max(width, height));
+  const outW = Math.max(1, Math.round(width * scale));
+  const outH = Math.max(1, Math.round(height * scale));
+
+  const clone = svgEl.cloneNode(true) as Element;
+  clone.setAttribute('width', String(width));
+  clone.setAttribute('height', String(height));
+  if (!clone.getAttribute('viewBox')) {
+    clone.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  }
+
+  const blob = new Blob([new XMLSerializer().serializeToString(clone)], {
+    type: 'image/svg+xml;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+
+  try {
+    const img: HTMLImageElement = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('Could not render SVG to an image.'));
+      i.src = url;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Could not create 2D canvas context');
+
+    ctx.drawImage(img, 0, 0, outW, outH);
+    return canvas.toDataURL('image/png');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Elements that define reusable content rather than drawing anything. */
+const NON_RENDERED_TAGS = new Set([
+  'defs',
+  'clippath',
+  'mask',
+  'marker',
+  'pattern',
+  'symbol',
+]);
+
+const GEOMETRY_TAGS = new Set([
+  'path',
+  'rect',
+  'circle',
+  'ellipse',
+  'polygon',
+  'polyline',
+  'line',
+]);
+
+const IMPORT_STYLE = {
+  fillColor: '#6366f1',
+  strokeColor: '#4338ca',
+  strokeWidth: 0,
+  opacity: 1,
+  visible: true,
+  locked: false,
+  isFrameCandidate: true,
+};
+
+/**
+ * Expresses a primitive element (rect, circle, …) as path data so that every
+ * shape can go through the same normalisation.
+ */
+function elementToPathData(el: Element): string | null {
+  const num = (name: string, fallback = 0) => {
+    const v = parseFloat(el.getAttribute(name) || '');
+    return isNaN(v) ? fallback : v;
+  };
+
+  switch (el.tagName.toLowerCase()) {
+    case 'path':
+      return el.getAttribute('d');
+
+    case 'rect': {
+      const x = num('x');
+      const y = num('y');
+      const w = num('width');
+      const h = num('height');
+      if (w <= 0 || h <= 0) return null;
+
+      // Per spec a missing rx/ry mirrors the other, and both clamp to half the side.
+      const hasRx = el.hasAttribute('rx');
+      const hasRy = el.hasAttribute('ry');
+      let rx = hasRx ? num('rx') : hasRy ? num('ry') : 0;
+      let ry = hasRy ? num('ry') : hasRx ? num('rx') : 0;
+      rx = Math.min(Math.max(rx, 0), w / 2);
+      ry = Math.min(Math.max(ry, 0), h / 2);
+
+      if (rx === 0 || ry === 0) {
+        return `M ${x} ${y} H ${x + w} V ${y + h} H ${x} Z`;
+      }
+      return (
+        `M ${x + rx} ${y} H ${x + w - rx}` +
+        ` A ${rx} ${ry} 0 0 1 ${x + w} ${y + ry} V ${y + h - ry}` +
+        ` A ${rx} ${ry} 0 0 1 ${x + w - rx} ${y + h} H ${x + rx}` +
+        ` A ${rx} ${ry} 0 0 1 ${x} ${y + h - ry} V ${y + ry}` +
+        ` A ${rx} ${ry} 0 0 1 ${x + rx} ${y} Z`
+      );
+    }
+
+    case 'circle':
+    case 'ellipse': {
+      const isCircle = el.tagName.toLowerCase() === 'circle';
+      const rx = isCircle ? num('r') : num('rx');
+      const ry = isCircle ? num('r') : num('ry');
+      if (rx <= 0 || ry <= 0) return null;
+      const cx = num('cx');
+      const cy = num('cy');
+      // Two half arcs; svgpath turns them into cubics.
+      return (
+        `M ${cx - rx} ${cy}` +
+        ` A ${rx} ${ry} 0 1 0 ${cx + rx} ${cy}` +
+        ` A ${rx} ${ry} 0 1 0 ${cx - rx} ${cy} Z`
+      );
+    }
+
+    case 'polygon':
+    case 'polyline': {
+      const nums = (el.getAttribute('points') || '').match(
+        /[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g
+      );
+      if (!nums || nums.length < 4) return null;
+      let d = `M ${nums[0]} ${nums[1]}`;
+      for (let i = 2; i + 1 < nums.length; i += 2) {
+        d += ` L ${nums[i]} ${nums[i + 1]}`;
+      }
+      return el.tagName.toLowerCase() === 'polygon' ? `${d} Z` : d;
+    }
+
+    case 'line':
+      return `M ${num('x1')} ${num('y1')} L ${num('x2')} ${num('y2')}`;
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * Resolves an id reference without building a selector out of file content.
+ */
+function findById(root: Element, id: string): Element | null {
+  const candidates = root.querySelectorAll('[id]');
+  for (const el of Array.from(candidates)) {
+    if (el.getAttribute('id') === id) return el;
+  }
+  return null;
+}
+
+interface Drawable {
+  el: Element;
+  transform: string;
+  name: string;
+}
+
+/**
+ * Walks the rendered tree, accumulating each element's transform chain and
+ * expanding <use> references. Ignoring transforms — as a naive querySelectorAll
+ * does — silently misplaces every shape an editor nested inside a <g>.
+ */
+function collectDrawables(root: Element, baseTransform: string): Drawable[] {
+  const out: Drawable[] = [];
+
+  const visit = (node: Element, inherited: string, chain: Set<Element>) => {
+    for (const child of Array.from(node.children)) {
+      const tag = child.tagName.toLowerCase();
+      if (NON_RENDERED_TAGS.has(tag)) continue;
+      if (child.getAttribute('display') === 'none') continue;
+
+      const own = child.getAttribute('transform');
+      const combined = own ? `${inherited} ${own}`.trim() : inherited;
+
+      if (GEOMETRY_TAGS.has(tag)) {
+        out.push({
+          el: child,
+          transform: combined,
+          name: child.getAttribute('id') || `SVG_${tag.toUpperCase()}_${out.length + 1}`,
+        });
+        continue;
+      }
+
+      if (tag === 'use') {
+        const href =
+          child.getAttribute('href') || child.getAttribute('xlink:href') || '';
+        if (!href.startsWith('#')) continue;
+
+        const target = findById(root, href.slice(1));
+        // A <use> pointing at itself or at an ancestor would recurse forever.
+        if (!target || chain.has(target)) continue;
+
+        const ux = parseFloat(child.getAttribute('x') || '0') || 0;
+        const uy = parseFloat(child.getAttribute('y') || '0') || 0;
+        const useTransform =
+          ux || uy ? `${combined} translate(${ux} ${uy})`.trim() : combined;
+
+        const nextChain = new Set(chain);
+        nextChain.add(target);
+
+        const targetTag = target.tagName.toLowerCase();
+        const targetOwn = target.getAttribute('transform');
+        const targetTransform = targetOwn
+          ? `${useTransform} ${targetOwn}`.trim()
+          : useTransform;
+
+        if (GEOMETRY_TAGS.has(targetTag)) {
+          out.push({
+            el: target,
+            transform: targetTransform,
+            name:
+              child.getAttribute('id') ||
+              target.getAttribute('id') ||
+              `SVG_USE_${out.length + 1}`,
+          });
+        } else {
+          visit(target, targetTransform, nextChain);
+        }
+        continue;
+      }
+
+      visit(child, combined, chain);
+    }
+  };
+
+  visit(root, baseTransform, new Set([root]));
+  return out;
+}
+
+/** Handles within this angle of each other read as one smooth tangent. */
+const SMOOTH_TOLERANCE_DEG = 8;
+
+/**
+ * Marks each anchor as a corner or a smooth point.
+ *
+ * Parsing only reveals that a segment is curved, not whether the curve carries
+ * smoothly through the anchor. Calling every curved anchor 'rounded' tells the
+ * editor to hold its handles collinear, which rounds off genuine corners as
+ * soon as they are edited — so compare the tangents and only claim 'rounded'
+ * when they actually line up.
+ */
+function classifyPointTypes(points: PathPoint[], closed: boolean): void {
+  const n = points.length;
+
+  for (let i = 0; i < n; i++) {
+    const p = points[i];
+
+    if (!p.cp1 && !p.cp2) {
+      p.type = 'straight';
+      continue;
+    }
+
+    const prev = closed ? points[(i - 1 + n) % n] : points[i - 1];
+    const next = closed ? points[(i + 1) % n] : points[i + 1];
+    const inRef = p.cp1 || prev;
+    const outRef = p.cp2 || next;
+
+    // An open path's endpoints have a handle on one side only: a corner.
+    if (!inRef || !outRef) {
+      p.type = 'break';
+      continue;
+    }
+
+    const inX = p.x - inRef.x;
+    const inY = p.y - inRef.y;
+    const outX = outRef.x - p.x;
+    const outY = outRef.y - p.y;
+    const inLen = Math.hypot(inX, inY);
+    const outLen = Math.hypot(outX, outY);
+
+    if (inLen < 1e-9 || outLen < 1e-9) {
+      p.type = 'break';
+      continue;
+    }
+
+    const cos = (inX * outX + inY * outY) / (inLen * outLen);
+    const angle = (Math.acos(Math.min(1, Math.max(-1, cos))) * 180) / Math.PI;
+    p.type = angle <= SMOOTH_TOLERANCE_DEG ? 'rounded' : 'break';
+  }
+}
+
+/**
+ * Converts normalised (absolute, arc-free, shorthand-free) path data into the
+ * editor's point model, splitting sub-paths so compound shapes keep their holes.
+ */
+function pathDataToShape(
+  d: string,
+  transform: string,
+  name: string
+): VectorShape | null {
+  let normalized: ReturnType<typeof svgPath>;
+  try {
+    let p = svgPath(d);
+    if (transform) p = p.transform(transform);
+    normalized = p.unshort().unarc().abs();
+  } catch {
+    return null;
+  }
+
+  const id = generateShapeId();
+  let counter = 0;
+  const mk = (x: number, y: number, type: PointType): PathPoint => ({
+    id: `${id}_p${counter++}`,
+    x,
+    y,
+    type,
+  });
+
+  const subPaths: PathPoint[][] = [];
+  const closedFlags: boolean[] = [];
+  let current: PathPoint[] = [];
+  let currentClosed = false;
+
+  const flush = () => {
+    if (current.length >= 2) {
+      // A closing segment usually restates the first point; fold it back in so
+      // the handle survives without leaving a duplicate anchor behind.
+      const first = current[0];
+      const last = current[current.length - 1];
+      if (
+        current.length > 2 &&
+        Math.abs(first.x - last.x) < 1e-6 &&
+        Math.abs(first.y - last.y) < 1e-6
+      ) {
+        if (last.cp1) first.cp1 = last.cp1;
+        if (last.cp1 && first.type === 'straight') first.type = 'rounded';
+        current.pop();
+      }
+      subPaths.push(current);
+      closedFlags.push(currentClosed);
+    }
+    current = [];
+    currentClosed = false;
+  };
+
+  const attachOutgoing = (cp: Point2D) => {
+    const prev = current[current.length - 1];
+    if (!prev) return;
+    prev.cp2 = cp;
+    if (prev.type === 'straight') prev.type = 'rounded';
+  };
+
+  normalized.iterate((seg, _index, x, y) => {
+    switch (seg[0]) {
+      case 'M':
+        flush();
+        current.push(mk(seg[1], seg[2], 'straight'));
+        break;
+      case 'L':
+        current.push(mk(seg[1], seg[2], 'straight'));
+        break;
+      case 'H':
+        current.push(mk(seg[1], y, 'straight'));
+        break;
+      case 'V':
+        current.push(mk(x, seg[1], 'straight'));
+        break;
+      case 'C': {
+        attachOutgoing({ x: seg[1], y: seg[2] });
+        const pt = mk(seg[5], seg[6], 'rounded');
+        pt.cp1 = { x: seg[3], y: seg[4] };
+        current.push(pt);
+        break;
+      }
+      case 'Q': {
+        // Raise the quadratic to a cubic: the editor only models cubics.
+        const prev = current[current.length - 1];
+        const px = prev ? prev.x : x;
+        const py = prev ? prev.y : y;
+        attachOutgoing({
+          x: px + (2 / 3) * (seg[1] - px),
+          y: py + (2 / 3) * (seg[2] - py),
+        });
+        const pt = mk(seg[3], seg[4], 'rounded');
+        pt.cp1 = {
+          x: seg[3] + (2 / 3) * (seg[1] - seg[3]),
+          y: seg[4] + (2 / 3) * (seg[2] - seg[4]),
+        };
+        current.push(pt);
+        break;
+      }
+      case 'Z':
+      case 'z':
+        currentClosed = true;
+        flush();
+        break;
+    }
+  });
+  flush();
+
+  if (subPaths.length === 0) return null;
+
+  subPaths.forEach((sub, i) => classifyPointTypes(sub, closedFlags[i] ?? true));
+
+  return {
+    id,
+    name,
+    points: subPaths[0],
+    closed: closedFlags[0] ?? true,
+    ...IMPORT_STYLE,
+    ...(subPaths.length > 1 ? { subPaths: subPaths.slice(1) } : {}),
+  };
+}
+
+/**
  * Parses an SVG string, extracting dimensions and converting vector elements into VectorShape
  */
 export function parseSvgToVectorShapes(svgText: string): TraceResult {
@@ -23,13 +482,14 @@ export function parseSvgToVectorShapes(svgText: string): TraceResult {
   const doc = parser.parseFromString(svgText, 'image/svg+xml');
   const svgEl = doc.querySelector('svg');
 
-  if (!svgEl) {
+  if (!svgEl || doc.querySelector('parsererror')) {
     throw new Error('Invalid SVG file. No <svg> tag found.');
   }
 
   // Extract dimensions
   let width = 1080;
   let height = 1080;
+  let baseTransform = '';
 
   const viewBox = svgEl.getAttribute('viewBox');
   if (viewBox) {
@@ -37,6 +497,10 @@ export function parseSvgToVectorShapes(svgText: string): TraceResult {
     if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
       width = Math.round(parts[2]);
       height = Math.round(parts[3]);
+      // A viewBox origin shifts every coordinate in the document.
+      if (parts[0] !== 0 || parts[1] !== 0) {
+        baseTransform = `translate(${-parts[0]} ${-parts[1]})`;
+      }
     }
   } else {
     const wAttr = parseFloat(svgEl.getAttribute('width') || '');
@@ -47,421 +511,119 @@ export function parseSvgToVectorShapes(svgText: string): TraceResult {
 
   const shapes: VectorShape[] = [];
 
-  // Helper to parse path 'd' attribute
-  function parsePathD(d: string, name: string): VectorShape | null {
-    const pathCommands = d.match(/([a-df-z])([^a-df-z]*)/gi);
-    if (!pathCommands) return null;
-
-    const points: PathPoint[] = [];
-    const id = generateShapeId();
-    let currX = 0;
-    let currY = 0;
-    let startX = 0;
-    let startY = 0;
-    let closed = false;
-
-    for (const cmd of pathCommands) {
-      const type = cmd[0];
-      const numbers = (cmd.slice(1).match(/[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g) || []).map(
-        Number
-      );
-
-      switch (type) {
-        case 'M': {
-          if (numbers.length >= 2) {
-            currX = numbers[0];
-            currY = numbers[1];
-            startX = currX;
-            startY = currY;
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              type: 'straight',
-            });
-          }
-          break;
-        }
-        case 'm': {
-          if (numbers.length >= 2) {
-            currX += numbers[0];
-            currY += numbers[1];
-            startX = currX;
-            startY = currY;
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              type: 'straight',
-            });
-          }
-          break;
-        }
-        case 'L': {
-          for (let i = 0; i < numbers.length; i += 2) {
-            currX = numbers[i];
-            currY = numbers[i + 1];
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              type: 'straight',
-            });
-          }
-          break;
-        }
-        case 'l': {
-          for (let i = 0; i < numbers.length; i += 2) {
-            currX += numbers[i];
-            currY += numbers[i + 1];
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              type: 'straight',
-            });
-          }
-          break;
-        }
-        case 'H': {
-          for (let i = 0; i < numbers.length; i++) {
-            currX = numbers[i];
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              type: 'straight',
-            });
-          }
-          break;
-        }
-        case 'h': {
-          for (let i = 0; i < numbers.length; i++) {
-            currX += numbers[i];
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              type: 'straight',
-            });
-          }
-          break;
-        }
-        case 'V': {
-          for (let i = 0; i < numbers.length; i++) {
-            currY = numbers[i];
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              type: 'straight',
-            });
-          }
-          break;
-        }
-        case 'v': {
-          for (let i = 0; i < numbers.length; i++) {
-            currY += numbers[i];
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              type: 'straight',
-            });
-          }
-          break;
-        }
-        case 'C': {
-          for (let i = 0; i < numbers.length; i += 6) {
-            const cp1x = numbers[i];
-            const cp1y = numbers[i + 1];
-            const cp2x = numbers[i + 2];
-            const cp2y = numbers[i + 3];
-            currX = numbers[i + 4];
-            currY = numbers[i + 5];
-
-            // Set outgoing handle on previous point
-            if (points.length > 0) {
-              const prev = points[points.length - 1];
-              prev.cp2 = { x: cp1x, y: cp1y };
-              prev.type = 'rounded';
-            }
-
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              cp1: { x: cp2x, y: cp2y },
-              type: 'rounded',
-            });
-          }
-          break;
-        }
-        case 'c': {
-          for (let i = 0; i < numbers.length; i += 6) {
-            const cp1x = currX + numbers[i];
-            const cp1y = currY + numbers[i + 1];
-            const cp2x = currX + numbers[i + 2];
-            const cp2y = currY + numbers[i + 3];
-            currX += numbers[i + 4];
-            currY += numbers[i + 5];
-
-            if (points.length > 0) {
-              const prev = points[points.length - 1];
-              prev.cp2 = { x: cp1x, y: cp1y };
-              prev.type = 'rounded';
-            }
-
-            points.push({
-              id: `${id}_p${points.length}`,
-              x: currX,
-              y: currY,
-              cp1: { x: cp2x, y: cp2y },
-              type: 'rounded',
-            });
-          }
-          break;
-        }
-        case 'Z':
-        case 'z': {
-          closed = true;
-          currX = startX;
-          currY = startY;
-          break;
-        }
-      }
-    }
-
-    if (points.length < 2) return null;
-
-    return {
-      id,
-      name,
-      points,
-      closed: true,
-      fillColor: '#6366f1',
-      strokeColor: '#4338ca',
-      strokeWidth: 2,
-      opacity: 1,
-      visible: true,
-      locked: false,
-      isFrameCandidate: true,
-    };
+  for (const drawable of collectDrawables(svgEl, baseTransform)) {
+    const d = elementToPathData(drawable.el);
+    if (!d) continue;
+    const shape = pathDataToShape(d, drawable.transform, drawable.name);
+    if (shape) shapes.push(shape);
   }
-
-  // Traverse all elements in SVG
-  const allElements = svgEl.querySelectorAll(
-    'path, rect, circle, ellipse, polygon, polyline'
-  );
-
-  allElements.forEach((el, idx) => {
-    const tagName = el.tagName.toLowerCase();
-    const name = el.getAttribute('id') || `SVG_${tagName.toUpperCase()}_${idx + 1}`;
-
-    if (tagName === 'path') {
-      const d = el.getAttribute('d');
-      if (d) {
-        const shape = parsePathD(d, name);
-        if (shape) shapes.push(shape);
-      }
-    } else if (tagName === 'rect') {
-      const x = parseFloat(el.getAttribute('x') || '0');
-      const y = parseFloat(el.getAttribute('y') || '0');
-      const w = parseFloat(el.getAttribute('width') || '100');
-      const h = parseFloat(el.getAttribute('height') || '100');
-      const rx = parseFloat(el.getAttribute('rx') || '0');
-      const id = generateShapeId();
-
-      if (rx > 0) {
-        // approximate rounded rect
-        shapes.push({
-          id,
-          name,
-          points: [
-            { id: `${id}_p0`, x: x + rx, y, type: 'straight' },
-            { id: `${id}_p1`, x: x + w - rx, y, type: 'straight' },
-            { id: `${id}_p2`, x: x + w, y: y + rx, type: 'straight' },
-            { id: `${id}_p3`, x: x + w, y: y + h - rx, type: 'straight' },
-            { id: `${id}_p4`, x: x + w - rx, y: y + h, type: 'straight' },
-            { id: `${id}_p5`, x: x + rx, y: y + h, type: 'straight' },
-            { id: `${id}_p6`, x, y: y + h - rx, type: 'straight' },
-            { id: `${id}_p7`, x, y: y + rx, type: 'straight' },
-          ],
-          closed: true,
-          fillColor: '#6366f1',
-          strokeColor: '#4338ca',
-          strokeWidth: 2,
-          opacity: 1,
-          visible: true,
-          locked: false,
-          isFrameCandidate: true,
-        });
-      } else {
-        shapes.push({
-          id,
-          name,
-          points: [
-            { id: `${id}_p0`, x, y, type: 'straight' },
-            { id: `${id}_p1`, x: x + w, y, type: 'straight' },
-            { id: `${id}_p2`, x: x + w, y: y + h, type: 'straight' },
-            { id: `${id}_p3`, x, y: y + h, type: 'straight' },
-          ],
-          closed: true,
-          fillColor: '#6366f1',
-          strokeColor: '#4338ca',
-          strokeWidth: 2,
-          opacity: 1,
-          visible: true,
-          locked: false,
-          isFrameCandidate: true,
-        });
-      }
-    } else if (tagName === 'circle' || tagName === 'ellipse') {
-      const cx = parseFloat(el.getAttribute('cx') || '50');
-      const cy = parseFloat(el.getAttribute('cy') || '50');
-      const rx = parseFloat(
-        el.getAttribute('rx') || el.getAttribute('r') || '50'
-      );
-      const ry = parseFloat(
-        el.getAttribute('ry') || el.getAttribute('r') || '50'
-      );
-      const kx = rx * 0.5522847;
-      const ky = ry * 0.5522847;
-      const id = generateShapeId();
-
-      shapes.push({
-        id,
-        name,
-        points: [
-          {
-            id: `${id}_p0`,
-            x: cx,
-            y: cy - ry,
-            type: 'rounded',
-            cp1: { x: cx - kx, y: cy - ry },
-            cp2: { x: cx + kx, y: cy - ry },
-          },
-          {
-            id: `${id}_p1`,
-            x: cx + rx,
-            y: cy,
-            type: 'rounded',
-            cp1: { x: cx + rx, y: cy - ky },
-            cp2: { x: cx + rx, y: cy + ky },
-          },
-          {
-            id: `${id}_p2`,
-            x: cx,
-            y: cy + ry,
-            type: 'rounded',
-            cp1: { x: cx + kx, y: cy + ry },
-            cp2: { x: cx - kx, y: cy + ry },
-          },
-          {
-            id: `${id}_p3`,
-            x: cx - rx,
-            y: cy,
-            type: 'rounded',
-            cp1: { x: cx - rx, y: cy + ky },
-            cp2: { x: cx - rx, y: cy - ky },
-          },
-        ],
-        closed: true,
-        fillColor: '#6366f1',
-        strokeColor: '#4338ca',
-        strokeWidth: 2,
-        opacity: 1,
-        visible: true,
-        locked: false,
-        isFrameCandidate: true,
-      });
-    } else if (tagName === 'polygon' || tagName === 'polyline') {
-      const ptsAttr = el.getAttribute('points') || '';
-      const numbers = (ptsAttr.match(/[-+]?(?:\d*\.\d+|\d+)/g) || []).map(Number);
-      const id = generateShapeId();
-      const points: PathPoint[] = [];
-
-      for (let i = 0; i < numbers.length; i += 2) {
-        points.push({
-          id: `${id}_p${points.length}`,
-          x: numbers[i],
-          y: numbers[i + 1],
-          type: 'straight',
-        });
-      }
-
-      if (points.length >= 3) {
-        shapes.push({
-          id,
-          name,
-          points,
-          closed: true,
-          fillColor: '#6366f1',
-          strokeColor: '#4338ca',
-          strokeWidth: 2,
-          opacity: 1,
-          visible: true,
-          locked: false,
-          isFrameCandidate: true,
-        });
-      }
-    }
-  });
 
   return { shapes, width, height };
 }
 
+/** A traced segment flatter than this many pixels is really a straight line. */
+const FLATNESS_TOLERANCE = 0.8;
+/** Two line segments meeting at less of a turn than this are one line. */
+const COLLINEAR_TOLERANCE_DEG = 2.5;
+
 /**
- * Douglas-Peucker point simplification algorithm
+ * vtracer fits a spline through the whole contour, so a straight edge comes
+ * back as a chain of barely-curved segments — which reads as a rounded shape
+ * with far too many anchors. Flatten the segments that are already straight to
+ * within a pixel, then drop the anchors left sitting mid-line.
+ *
+ * This only removes what is provably redundant, so the outline does not move.
  */
-function douglasPeucker(points: Point2D[], epsilon: number): Point2D[] {
-  if (points.length <= 2) return points;
+function straightenFlatRuns(points: PathPoint[], closed: boolean): PathPoint[] {
+  const n = points.length;
+  if (n < 3) return points;
 
-  let dmax = 0;
-  let index = 0;
-  const end = points.length - 1;
+  const pts = points.map((p) => ({
+    ...p,
+    cp1: p.cp1 ? { ...p.cp1 } : undefined,
+    cp2: p.cp2 ? { ...p.cp2 } : undefined,
+  }));
 
-  for (let i = 1; i < end; i++) {
-    const d = perpendicularDistance(points[i], points[0], points[end]);
-    if (d > dmax) {
-      index = i;
-      dmax = d;
+  const lastSeg = closed ? n - 1 : n - 2;
+  for (let i = 0; i <= lastSeg; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    if (!a.cp2 && !b.cp1) continue;
+
+    const chordX = b.x - a.x;
+    const chordY = b.y - a.y;
+    const chordLen = Math.hypot(chordX, chordY);
+    if (chordLen < 1e-9) continue;
+
+    let worst = 0;
+    for (const [sx, sy] of sampleCubicBezier(a, a.cp2 || a, b.cp1 || b, b, 10)) {
+      // Perpendicular distance from the sample to the chord.
+      const d = Math.abs(chordX * (a.y - sy) - (a.x - sx) * chordY) / chordLen;
+      if (d > worst) worst = d;
+    }
+
+    if (worst <= FLATNESS_TOLERANCE) {
+      a.cp2 = undefined;
+      b.cp1 = undefined;
     }
   }
 
-  if (dmax > epsilon) {
-    const recResults1 = douglasPeucker(points.slice(0, index + 1), epsilon);
-    const recResults2 = douglasPeucker(points.slice(index), epsilon);
-    return recResults1.slice(0, recResults1.length - 1).concat(recResults2);
-  } else {
-    return [points[0], points[end]];
-  }
-}
+  // Anchors between two straight segments that barely turn add nothing.
+  const keep: PathPoint[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const isEndpoint = !closed && (i === 0 || i === pts.length - 1);
+    const prev = pts[(i - 1 + pts.length) % pts.length];
+    const next = pts[(i + 1) % pts.length];
 
-function perpendicularDistance(pt: Point2D, lineStart: Point2D, lineEnd: Point2D): number {
-  let dx = lineEnd.x - lineStart.x;
-  let dy = lineEnd.y - lineStart.y;
-  const mag = Math.hypot(dx, dy);
-  if (mag === 0) return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
+    if (isEndpoint || p.cp1 || p.cp2 || prev.cp2 || next.cp1) {
+      keep.push(p);
+      continue;
+    }
 
-  const u = ((pt.x - lineStart.x) * dx + (pt.y - lineStart.y) * dy) / (mag * mag);
-  let ix: number;
-  let iy: number;
-  if (u < 0) {
-    ix = lineStart.x;
-    iy = lineStart.y;
-  } else if (u > 1) {
-    ix = lineEnd.x;
-    iy = lineEnd.y;
-  } else {
-    ix = lineStart.x + u * dx;
-    iy = lineStart.y + u * dy;
+    const inLen = Math.hypot(p.x - prev.x, p.y - prev.y);
+    const outLen = Math.hypot(next.x - p.x, next.y - p.y);
+    if (inLen < 1e-9 || outLen < 1e-9) continue; // duplicate anchor
+
+    const cos =
+      ((p.x - prev.x) * (next.x - p.x) + (p.y - prev.y) * (next.y - p.y)) /
+      (inLen * outLen);
+    const turn = (Math.acos(Math.min(1, Math.max(-1, cos))) * 180) / Math.PI;
+    if (turn > COLLINEAR_TOLERANCE_DEG) keep.push(p);
   }
-  return Math.hypot(pt.x - ix, pt.y - iy);
+
+  return keep.length >= (closed ? 3 : 2) ? keep : pts;
 }
 
 /**
- * Outline/Trace a raster image (PNG, JPG, WEBP) into vector paths
+ * Maps the UI's single "smoothing" dial onto vtracer's curve-fitting knobs.
+ * Higher smoothing means blunter corners, longer segments and more aggressive
+ * speckle removal.
+ */
+function converterParamsFor(smoothing: number) {
+  const s = Math.min(12, Math.max(1, smoothing));
+  return {
+    debug: false,
+    mode: 'spline' as const,
+    // vtracer wants radians. 50° at the low end up to 105° at the high end:
+    // the wider the angle, the fewer points survive as hard corners.
+    cornerThreshold: ((45 + s * 5) * Math.PI) / 180,
+    lengthThreshold: 2 + s * 0.5,
+    maxIterations: 10,
+    spliceThreshold: (45 * Math.PI) / 180,
+    // Cluster sizes are pixel areas, so grow the speckle floor quadratically.
+    filterSpeckle: Math.max(4, s * s),
+    pathPrecision: 8,
+  };
+}
+
+/**
+ * Outline/Trace a raster image (PNG, JPG, WEBP) into vector paths.
+ *
+ * Contour extraction and curve fitting are done by vtracer (visioncortex) in
+ * WebAssembly. It binarises on the red channel at a fixed midpoint and ignores
+ * alpha, so the threshold / alpha / invert decisions stay here and it receives
+ * an already black-and-white image.
  */
 export async function traceRasterImage(
   imageSource: HTMLImageElement | string,
@@ -495,10 +657,10 @@ export async function traceRasterImage(
   const width = img.naturalWidth || img.width || 800;
   const height = img.naturalHeight || img.height || 800;
 
-  // Render to offscreen canvas
+  // Render to offscreen canvas. Tracing runs in wasm so a larger working
+  // resolution is affordable, which keeps small details intact.
   const canvas = document.createElement('canvas');
-  // Limit processing resolution for quick response while keeping sharp contours
-  const maxDim = 800;
+  const maxDim = 1600;
   const scale = Math.min(1, maxDim / Math.max(width, height));
   const procW = Math.max(20, Math.round(width * scale));
   const procH = Math.max(20, Math.round(height * scale));
@@ -521,38 +683,93 @@ export async function traceRasterImage(
     }
   }
 
-  // Create binary grid (true = inside frame, false = background)
-  const grid: boolean[] = new Array(procW * procH);
-
-  for (let y = 0; y < procH; y++) {
-    for (let x = 0; x < procW; x++) {
-      const idx = (y * procW + x) * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-      const a = data[idx + 3];
-
-      let isForeground = false;
-      if (hasAlpha && opts.detectAlpha) {
-        isForeground = a >= opts.threshold;
-      } else {
-        // Luminance calculation
-        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-        isForeground = lum < opts.threshold; // dark on light or contrast
-      }
-
-      if (opts.invert) {
-        isForeground = !isForeground;
-      }
-
-      grid[y * procW + x] = isForeground;
+  // Flatten to pure black (inside the frame) on white (background).
+  for (let i = 0; i < data.length; i += 4) {
+    let isForeground: boolean;
+    if (hasAlpha && opts.detectAlpha) {
+      isForeground = data[i + 3] >= opts.threshold;
+    } else {
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      isForeground = lum < opts.threshold;
     }
+    if (opts.invert) isForeground = !isForeground;
+
+    const v = isForeground ? 0 : 255;
+    data[i] = v;
+    data[i + 1] = v;
+    data[i + 2] = v;
+    data[i + 3] = 255;
   }
 
-  // Find exterior boundary using Moore-Neighbor / Marching Squares
-  const rawContour = traceOuterContour(grid, procW, procH);
+  let svgOutput = '';
+  const converter = new BinaryImageConverter(
+    imgData,
+    converterParamsFor(opts.smoothing),
+    { invert: false, pathFill: undefined, backgroundColor: undefined, attributes: undefined, scale: 1 }
+  );
+  try {
+    converter.init();
+    // tick() walks one cluster per call and reports true once they are all done.
+    let guard = 0;
+    while (!converter.tick()) {
+      if (++guard > procW * procH) break;
+    }
+    svgOutput = converter.getResult();
+  } finally {
+    converter.free();
+  }
 
-  if (rawContour.length < 3) {
+  const traced = parseSvgToVectorShapes(svgOutput).shapes.map((shape) => {
+    const points = straightenFlatRuns(shape.points, true);
+    const subPaths = shape.subPaths?.map((sub) => straightenFlatRuns(sub, true));
+    classifyPointTypes(points, true);
+    subPaths?.forEach((sub) => classifyPointTypes(sub, true));
+    return { ...shape, points, subPaths };
+  });
+
+  // vtracer works in the processed pixel grid; map back to the source size.
+  const invScale = 1 / scale;
+  const rescale = (p: PathPoint): PathPoint => ({
+    ...p,
+    x: Math.round(p.x * invScale * 100) / 100,
+    y: Math.round(p.y * invScale * 100) / 100,
+    cp1: p.cp1
+      ? { x: p.cp1.x * invScale, y: p.cp1.y * invScale }
+      : undefined,
+    cp2: p.cp2
+      ? { x: p.cp2.x * invScale, y: p.cp2.y * invScale }
+      : undefined,
+  });
+
+  const shapes: VectorShape[] = traced.map((shape, idx) => ({
+    ...shape,
+    name: idx === 0 ? 'Image Frame Outline' : `Image Frame Outline ${idx + 1}`,
+    points: shape.points.map(rescale),
+    // fillHoles keeps only the outer contour of each cluster.
+    subPaths:
+      opts.fillHoles || !shape.subPaths
+        ? undefined
+        : shape.subPaths.map((sub) => sub.map(rescale)),
+    closed: true,
+    fillColor: '#6366f1',
+    strokeColor: '#4338ca',
+    strokeWidth: 0,
+    opacity: 1,
+    visible: true,
+    locked: false,
+    isFrameCandidate: true,
+  }));
+
+  // Largest first, so the primary silhouette is the one selected on import.
+  shapes.sort((a, b) => {
+    const area = (s: VectorShape) => {
+      const b1 = getShapeBounds(s);
+      return b1.width * b1.height;
+    };
+    return area(b) - area(a);
+  });
+
+  if (shapes.length === 0) {
     // Fallback if empty: standard center frame outline
     const id = generateShapeId();
     const fallbackShape: VectorShape = {
@@ -567,7 +784,7 @@ export async function traceRasterImage(
       closed: true,
       fillColor: '#6366f1',
       strokeColor: '#4338ca',
-      strokeWidth: 2,
+      strokeWidth: 0,
       opacity: 1,
       visible: true,
       locked: false,
@@ -576,133 +793,5 @@ export async function traceRasterImage(
     return { shapes: [fallbackShape], width, height };
   }
 
-  // Scale raw contour back to original image dimensions
-  const invScale = 1 / scale;
-  const scaledPoints: Point2D[] = rawContour.map((p) => ({
-    x: Math.round(p.x * invScale),
-    y: Math.round(p.y * invScale),
-  }));
-
-  // Simplify using Douglas-Peucker
-  const epsilon = Math.max(1, opts.smoothing * 1.2);
-  const simplified = douglasPeucker(scaledPoints, epsilon);
-
-  // Convert to PathPoints with smooth Bézier curve handles
-  const id = generateShapeId();
-  const pathPoints: PathPoint[] = [];
-
-  for (let i = 0; i < simplified.length; i++) {
-    const curr = simplified[i];
-    const prev = simplified[(i - 1 + simplified.length) % simplified.length];
-    const next = simplified[(i + 1) % simplified.length];
-
-    // Compute tangent vector for smooth curvature
-    const dx = next.x - prev.x;
-    const dy = next.y - prev.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const handleDist = Math.min(len * 0.25, 30);
-
-    const cp1 = {
-      x: curr.x - (dx / len) * handleDist,
-      y: curr.y - (dy / len) * handleDist,
-    };
-    const cp2 = {
-      x: curr.x + (dx / len) * handleDist,
-      y: curr.y + (dy / len) * handleDist,
-    };
-
-    pathPoints.push({
-      id: `${id}_p${i}`,
-      x: curr.x,
-      y: curr.y,
-      cp1,
-      cp2,
-      type: 'rounded',
-    });
-  }
-
-  const resultShape: VectorShape = {
-    id,
-    name: 'Image Frame Outline',
-    points: pathPoints,
-    closed: true,
-    fillColor: '#6366f1',
-    strokeColor: '#4338ca',
-    strokeWidth: 2,
-    opacity: 1,
-    visible: true,
-    locked: false,
-    isFrameCandidate: true,
-  };
-
-  return { shapes: [resultShape], width, height };
-}
-
-/**
- * Traces the outermost contour of a binary grid
- */
-function traceOuterContour(grid: boolean[], w: number, h: number): Point2D[] {
-  // Find top-most left-most foreground pixel
-  let startX = -1;
-  let startY = -1;
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (grid[y * w + x]) {
-        startX = x;
-        startY = y;
-        break;
-      }
-    }
-    if (startX !== -1) break;
-  }
-
-  if (startX === -1) return [];
-
-  // Moore-Neighbor Tracing
-  const contour: Point2D[] = [];
-  let currX = startX;
-  let currY = startY;
-
-  // Directions (Clockwise 8-neighborhood)
-  // 0: N, 1: NE, 2: E, 3: SE, 4: S, 5: SW, 6: W, 7: NW
-  const dx = [0, 1, 1, 1, 0, -1, -1, -1];
-  const dy = [-1, -1, 0, 1, 1, 1, 0, -1];
-
-  let dir = 7; // Backtrack direction
-  contour.push({ x: currX, y: currY });
-
-  const maxSteps = w * h;
-  let step = 0;
-
-  while (step++ < maxSteps) {
-    let found = false;
-    // Check neighbor starting from (dir + 5) % 8 (backtrack relative)
-    const checkStart = (dir + 5) % 8;
-
-    for (let i = 0; i < 8; i++) {
-      const d = (checkStart + i) % 8;
-      const nx = currX + dx[d];
-      const ny = currY + dy[d];
-
-      if (nx >= 0 && nx < w && ny >= 0 && ny < h && grid[ny * w + nx]) {
-        currX = nx;
-        currY = ny;
-        dir = d;
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) break;
-
-    // Returned to start point
-    if (currX === startX && currY === startY) {
-      break;
-    }
-
-    contour.push({ x: currX, y: currY });
-  }
-
-  return contour;
+  return { shapes, width, height };
 }

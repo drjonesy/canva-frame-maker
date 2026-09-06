@@ -22,7 +22,9 @@
     "pdf-lib": "^1.17.1",
     "polygon-clipping": "^0.15.7",
     "react": "^19.0.1",
-    "react-dom": "^19.0.1"
+    "react-dom": "^19.0.1",
+    "svgpath": "^2.6.0",
+    "vectortracer": "0.1.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.14",
@@ -31,6 +33,7 @@
     "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "vite-plugin-wasm": "^3.6.0"
   }
 }

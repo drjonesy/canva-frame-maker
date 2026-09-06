@@ -34,8 +34,11 @@ passed down by props; the only context is theme.
 
 ### Components ([src/components/](src/components/))
 
-- `CanvasArea.tsx` — the SVG canvas: rendering, pen tool, drag/transform, marquee
+- `CanvasArea.tsx` — the SVG canvas: rendering, pen tool, drag/transform, marquee, guides
 - `Toolbar.tsx`, `PropertiesPanel.tsx`, `LayersPanel.tsx`, `PenInspector.tsx` — chrome
+- `TabbedSection.tsx` — the right column's Align / Merge / Guides tab block;
+  `AlignTab.tsx` and `MergeTab.tsx` are two of its bodies, `GuidesPanel.tsx` the third
+- `Rulers.tsx`, `GuidesPanel.tsx` — rulers along the canvas edges and the guide controls
 - `ExportModal.tsx`, `ImageTraceModal.tsx`, `NewProjectModal.tsx`, `CanvaGuideModal.tsx`
 
 ### Utils ([src/utils/](src/utils/))
@@ -44,9 +47,16 @@ passed down by props; the only context is theme.
 - `bezier.ts` — curve math, point/handle manipulation
 - `booleanOps.ts` — union/subtract/intersect via `polygon-clipping`
 - `shapePresets.ts` — built-in shape library
-- `alignment.ts` — align/distribute
+- `alignment.ts` — align/distribute, including aligning a selection to a guide
+- `guides.ts` — guide creation, ruler tick spacing, snapping a box to guides
 - `overlayDetector.ts` — validates a frame against Canva's overlay rules
 - `canvaExport.ts` — emits Canva-importable output (`pdf-lib` for PDF)
+
+## Changelog
+
+Read [CHANGELOG.md](CHANGELOG.md) at the start of each session and add an entry for the
+work done before finishing. Group by date under `## [Unreleased]` using Keep a Changelog
+headings. There is no test suite, so the changelog is the running record of what changed.
 
 ## Conventions
 

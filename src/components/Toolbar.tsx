@@ -1,10 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { ShapePresetType, ToolMode } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import {
-  MousePointer,
-  PenTool,
-  Shapes,
   FolderOpen,
   FilePlus,
   Download,
@@ -16,15 +12,6 @@ import {
   HelpCircle,
   AlertTriangle,
   CheckCircle,
-  Square,
-  Circle,
-  Heart,
-  Star,
-  Triangle,
-  Hexagon,
-  Cloud,
-  MessageSquare,
-  Sliders,
   ChevronDown,
   Sparkles,
   Upload,
@@ -33,9 +20,6 @@ import {
 } from 'lucide-react';
 
 interface Props {
-  currentTool: ToolMode;
-  onSelectTool: (tool: ToolMode) => void;
-  onAddPresetShape: (type: ShapePresetType) => void;
   onNewProject: () => void;
   onFileSelected: (file: File, isNewProject: boolean) => void;
   onExport: () => void;
@@ -50,23 +34,7 @@ interface Props {
   onOpenGuide: () => void;
 }
 
-const PRESET_ICONS: { type: ShapePresetType; label: string; icon: React.ReactNode }[] = [
-  { type: 'rect', label: 'Rectangle', icon: <Square className="w-4 h-4" /> },
-  { type: 'roundedRect', label: 'Rounded Rectangle', icon: <Square className="w-4 h-4 rounded-sm" /> },
-  { type: 'circle', label: 'Circle / Ellipse', icon: <Circle className="w-4 h-4" /> },
-  { type: 'arch', label: 'Arch Window Frame', icon: <Sliders className="w-4 h-4 rotate-90" /> },
-  { type: 'heart', label: 'Heart', icon: <Heart className="w-4 h-4" /> },
-  { type: 'star', label: '5-Point Star', icon: <Star className="w-4 h-4" /> },
-  { type: 'triangle', label: 'Triangle', icon: <Triangle className="w-4 h-4" /> },
-  { type: 'hexagon', label: 'Hexagon', icon: <Hexagon className="w-4 h-4" /> },
-  { type: 'cloud', label: 'Cloud', icon: <Cloud className="w-4 h-4" /> },
-  { type: 'speechBubble', label: 'Speech Bubble', icon: <MessageSquare className="w-4 h-4" /> },
-];
-
 export const Toolbar: React.FC<Props> = ({
-  currentTool,
-  onSelectTool,
-  onAddPresetShape,
   onNewProject,
   onFileSelected,
   onExport,
@@ -81,7 +49,6 @@ export const Toolbar: React.FC<Props> = ({
   onOpenGuide,
 }) => {
   const { isDark, toggleTheme } = useTheme();
-  const [shapesDropdownOpen, setShapesDropdownOpen] = useState(false);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const loadFileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
@@ -239,110 +206,6 @@ export const Toolbar: React.FC<Props> = ({
           >
             <Redo2 className="w-3.5 h-3.5" />
           </button>
-        </div>
-      </div>
-
-      {/* Center: Tools Selector */}
-      <div className={`flex items-center gap-1 p-0.5 rounded-md border ${
-        isDark ? 'bg-[#141414] border-[#2A2A2A]' : 'bg-gray-100 border-gray-200'
-      }`}>
-        {/* Select Tool */}
-        <button
-          type="button"
-          onClick={() => onSelectTool('select')}
-          title="Select & Move (V)"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all ${
-            currentTool === 'select'
-              ? 'bg-gradient-to-r from-[#F43F5E] to-[#FF5722] text-white font-semibold shadow-xs'
-              : isDark
-              ? 'text-neutral-400 hover:text-white hover:bg-[#242424]'
-              : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200'
-          }`}
-        >
-          <MousePointer className="w-3.5 h-3.5" />
-          <span>Select</span>
-        </button>
-
-        {/* Direct Select / Sub-select (Point manipulation) */}
-        <button
-          type="button"
-          onClick={() => onSelectTool('directSelect')}
-          title="Sub-Select / Points & Handles (A)"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all ${
-            currentTool === 'directSelect'
-              ? 'bg-gradient-to-r from-[#F43F5E] to-[#FF5722] text-white font-semibold shadow-xs'
-              : isDark
-              ? 'text-neutral-400 hover:text-white hover:bg-[#242424]'
-              : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200'
-          }`}
-        >
-          <Sliders className="w-3.5 h-3.5" />
-          <span>Sub-Select</span>
-        </button>
-
-        {/* Pen Tool */}
-        <button
-          type="button"
-          onClick={() => onSelectTool('pen')}
-          title="Pen Tool: Add points, curves, and break handles (P)"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all ${
-            currentTool === 'pen'
-              ? 'bg-gradient-to-r from-[#F43F5E] to-[#FF5722] text-white font-semibold shadow-xs'
-              : isDark
-              ? 'text-neutral-400 hover:text-white hover:bg-[#242424]'
-              : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200'
-          }`}
-        >
-          <PenTool className="w-3.5 h-3.5" />
-          <span>Pen Tool</span>
-        </button>
-
-        {/* Preset Shapes Dropdown */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setShapesDropdownOpen(!shapesDropdownOpen)}
-            className={`flex items-center gap-1 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
-              isDark
-                ? 'text-neutral-300 hover:text-white hover:bg-[#242424]'
-                : 'text-gray-700 hover:text-gray-900 hover:bg-gray-200'
-            }`}
-          >
-            <Shapes className="w-3.5 h-3.5 text-[#FF5722]" />
-            <span>Preset Shapes</span>
-            <ChevronDown className={`w-3 h-3 ${isDark ? 'text-neutral-500' : 'text-gray-500'}`} />
-          </button>
-
-          {shapesDropdownOpen && (
-            <div
-              className={`absolute left-0 top-full mt-1.5 w-52 rounded-lg border shadow-2xl p-1 z-50 grid grid-cols-1 gap-0.5 ${
-                isDark ? 'bg-[#1A1A1A] border-[#2A2A2A]' : 'bg-white border-gray-200'
-              }`}
-              onMouseLeave={() => setShapesDropdownOpen(false)}
-            >
-              <div className={`px-2 py-1 text-[9px] font-mono font-semibold uppercase tracking-wider border-b ${
-                isDark ? 'text-neutral-400 border-[#2A2A2A]' : 'text-gray-500 border-gray-200'
-              }`}>
-                Canva Frame Presets
-              </div>
-              {PRESET_ICONS.map((preset) => (
-                <button
-                  key={preset.type}
-                  type="button"
-                  onClick={() => {
-                    onAddPresetShape(preset.type);
-                    setShapesDropdownOpen(false);
-                  }}
-                  className={`flex items-center gap-2.5 px-3 py-1.5 rounded text-left text-xs transition-colors ${
-                    isDark ? 'hover:bg-[#242424] text-neutral-200' : 'hover:bg-gray-100 text-gray-800'
-                  }`}
-                >
-                  <span className="text-[#F43F5E]">{preset.icon}</span>
-                  <span>{preset.label}</span>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       </div>
 
