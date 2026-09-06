@@ -11,6 +11,32 @@ This project has no releases yet, so entries are grouped by date.
 
 #### Added
 
+- **`Shift+)` and `Shift+(` move the selection up and down the layer stack** —
+  the keyboard twin of the Layers panel's chevrons. The pair reads as the
+  closing/opening bracket of the stack and sits on `0`/`9`, so it collides with
+  no tool letter; `e.code` (`Digit0`/`Digit9`) is checked as a fallback for
+  layouts where those shifted keys are not parentheses.
+  - It moves the **whole selection**, not one row: each shape steps past its
+    nearest *unselected* neighbour, so a multi-selection travels as a block and
+    keeps its internal order. The sweep starts at the leading edge so nothing
+    moves twice in a pass.
+  - A selection already pinned against the top or bottom moves nothing **and
+    records no history entry** — an undo that does nothing visible is worse than
+    no undo at all.
+  - Both panel chevrons carry the shortcut in their tooltip and
+    `aria-keyshortcuts`.
+
+- **`S` opens the shapes flyout** in the tool rail, and `Escape` closes it. The
+  key is handled in `ToolRail` rather than App's keymap because the flyout keeps
+  its own open/closed state; App leaves `s` unbound, so nothing collides.
+
+#### Changed
+
+- The shape flyout is now **Basic Shapes** — the rail button and the flyout
+  header both — where it read "Preset Shapes" / "Canva Frame Presets". The list
+  is the ordinary starting shapes, not a set of Canva-specific presets, and the
+  old name implied otherwise.
+
 - **Lock Move** (`L`), a toggle in the Move tab that constrains a Select-tool
   drag to one axis: the selection goes dead horizontal or dead vertical, never
   diagonal. It is a **mode, not a held key** — a long drag across the canvas
@@ -85,6 +111,55 @@ This project has no releases yet, so entries are grouped by date.
   stroke of its own colour only to round its corners to match the bar.
 
 #### Fixed
+
+- **Boolean operations no longer warp the shapes they cut, and give back the
+  anchors you started with** (new `utils/pathClipping.ts`). Subtracting a pill
+  from a trapezoid came back as a dome with two dimples: every straight edge
+  bulged outward and the corners rounded off. `polygonToPathPoints` was turning
+  each vertex of the clipped polygon into a **`rounded`** anchor with tangent
+  handles a quarter of the neighbour-to-neighbour distance long — it fitted a
+  smooth curve through a point list that was, by construction, a polygon of
+  straight segments. Union, Subtract, Intersect, Xor, Divide and Flatten all
+  went through that function, so all six were affected.
+
+  `polygon-clipping` only speaks polygons, so curves still have to be flattened
+  on the way in — but the result is now rebuilt from the **original beziers**
+  rather than from the flattened points. Every sample handed to the clipper is
+  remembered along with the segment and the `t` it came from; on the way back
+  each edge of the result ring is matched to its source segment, consecutive
+  edges from one segment are merged, and that run is re-cut from the source
+  cubic. A curve the operation did not touch comes back as *the same curve with
+  the same anchors and the same handles*, and a new anchor appears only where
+  the two outlines actually crossed.
+  - Cutting a 60px pill out of a trapezoid's top edge now yields **9 anchors**:
+    the trapezoid's own 4 corners, 2 new ones where the pill's sides cross the
+    edge, and the pill's own 3 bottom-cap anchors, carrying the pill's own
+    control points to the decimal. The first pass at this fix emitted honest
+    straight anchors instead, which did not warp but spent ~30 anchors on a
+    single arc; before that it was 4 anchors and the wrong shape.
+  - Sub-curves are cut with the cubic **blossom**, f(t0,t0,t1) and f(t0,t1,t1),
+    which also handles `t1 < t0` — the clipper walks a source path backwards
+    whenever it reverses a winding, and the blossom simply hands back the
+    reversed sub-curve.
+  - Anchor types are re-derived from the handles that survive: no handles is
+    `straight`, collinear handles `rounded`, anything else `break`. A rounded
+    rectangle's corners stay `break`, a circle's stay `rounded`.
+  - **Straight segments are no longer sampled at all** — the clipper is exact on
+    a straight edge, so sampling one only littered the result with anchors.
+    Curves are sampled adaptively, to a chord of at most 2px. The curve itself
+    is restored exactly afterwards, so that figure only bounds how far a
+    computed crossing can sit from the true one: on a 300px-radius circle, 0.06px.
+  - A crossing the clipper invented is remembered by nobody, so it is placed by
+    asking which of the few plausible segments actually passes through it, and
+    the piece either side of it is cut at the parameter nearest to it.
+  - A lens — two arcs meeting at two crossings — is a legitimate result but has
+    no closing segment in a two-anchor path, so such a ring is subdivided up to
+    three anchors rather than dropped.
+  - Exercised over all 45 preset pairs × 5 operations: no NaN coordinates, no
+    degenerate rings, nothing thrown.
+  - A boolean result no longer invents a **2px stroke** on shapes that have
+    none: `strokeWidth || 2` read a legitimate 0 as missing, and every new
+    shape has defaulted to 0 stroke since the 09-05 change.
 
 - **Dark mode reaches the right-hand column again.** Every `dark:` utility in
   the app was dead code: Tailwind 4's built-in `dark` variant compiles to a

@@ -150,7 +150,8 @@ export const LayersPanel: React.FC<Props> = ({
                       e.stopPropagation();
                       onReorderLayer(shape.id, 'up');
                     }}
-                    title="Move Layer Forward"
+                    title="Move Layer Forward — Shift+) moves the selection"
+                    aria-keyshortcuts="Shift+)"
                     className={`p-1 rounded disabled:opacity-20 transition-colors ${
                       isDark ? 'hover:bg-[#2E2E2E] text-neutral-400 hover:text-white' : 'hover:bg-gray-200 text-gray-500 hover:text-gray-900'
                     }`}
@@ -164,7 +165,8 @@ export const LayersPanel: React.FC<Props> = ({
                       e.stopPropagation();
                       onReorderLayer(shape.id, 'down');
                     }}
-                    title="Move Layer Backward"
+                    title="Move Layer Backward — Shift+( moves the selection"
+                    aria-keyshortcuts="Shift+("
                     className={`p-1 rounded disabled:opacity-20 transition-colors ${
                       isDark ? 'hover:bg-[#2E2E2E] text-neutral-400 hover:text-white' : 'hover:bg-gray-200 text-gray-500 hover:text-gray-900'
                     }`}

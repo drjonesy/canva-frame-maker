@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ShapePresetType, ToolMode } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { ParallelIcon } from './ParallelIcon';
@@ -192,6 +192,33 @@ export const ToolRail: React.FC<Props> = ({
   const { isDark } = useTheme();
   const [shapesOpen, setShapesOpen] = useState(false);
 
+  // "S" toggles the shapes flyout, and Escape closes it. The rest of the rail's
+  // shortcuts live in App's keymap, but this one belongs to the state the
+  // flyout keeps for itself. App leaves "s" unbound, so nothing collides.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      // Leave Cmd+S and friends to the browser.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key.toLowerCase() === 's') {
+        setShapesOpen((v) => !v);
+      } else if (e.key === 'Escape') {
+        setShapesOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <div
       className={`w-12 shrink-0 border-r flex flex-col items-center gap-1 py-2 select-none z-30 transition-colors ${
@@ -269,10 +296,11 @@ export const ToolRail: React.FC<Props> = ({
         <ParallelIcon className="w-4 h-4" />
       </RailButton>
 
-      {/* Preset shapes, as a flyout so the rail stays one icon wide. */}
+      {/* Basic shapes, as a flyout so the rail stays one icon wide. */}
       <div className="relative">
         <RailButton
-          label="Preset Shapes"
+          label="Basic Shapes"
+          shortcut="S"
           expanded={shapesOpen}
           onClick={() => setShapesOpen((v) => !v)}
         >
@@ -291,7 +319,7 @@ export const ToolRail: React.FC<Props> = ({
                 isDark ? 'text-neutral-400 border-[#2A2A2A]' : 'text-gray-500 border-gray-200'
               }`}
             >
-              Canva Frame Presets
+              Basic Shapes
             </div>
             {PRESET_ICONS.map((preset) => (
               <button

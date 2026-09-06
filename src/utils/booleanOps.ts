@@ -1,94 +1,39 @@
-import polygonClipping, { MultiPolygon, Polygon, Ring } from 'polygon-clipping';
+import polygonClipping, { MultiPolygon, Polygon } from 'polygon-clipping';
 import { BooleanOperation, PathPoint, VectorShape } from '../types';
-import { samplePathToPolygon } from './bezier';
 import { generateShapeId } from './shapePresets';
+import { SourceIndex, ringToPathPoints } from './pathClipping';
 
 /**
- * Convert a VectorShape into a polygon-clipping MultiPolygon
+ * Convert a VectorShape into a polygon-clipping MultiPolygon.
+ *
+ * Only for callers that just need the geometry (overlap tests). An operation
+ * whose *result* becomes a shape must build its inputs through one shared
+ * `SourceIndex` instead, so the curves can be restored afterwards.
  */
 export function shapeToMultiPolygon(shape: VectorShape): MultiPolygon {
-  const outerRing: Ring = samplePathToPolygon(shape.points, shape.closed, 10);
-  if (outerRing.length < 3) return [];
-
-  // Ensure ring is closed
-  if (
-    outerRing[0][0] !== outerRing[outerRing.length - 1][0] ||
-    outerRing[0][1] !== outerRing[outerRing.length - 1][1]
-  ) {
-    outerRing.push([outerRing[0][0], outerRing[0][1]]);
-  }
-
-  const rings: Ring[] = [outerRing];
-
-  if (shape.subPaths && shape.subPaths.length > 0) {
-    for (const sub of shape.subPaths) {
-      const holeRing: Ring = samplePathToPolygon(sub, true, 10);
-      if (holeRing.length >= 3) {
-        if (
-          holeRing[0][0] !== holeRing[holeRing.length - 1][0] ||
-          holeRing[0][1] !== holeRing[holeRing.length - 1][1]
-        ) {
-          holeRing.push([holeRing[0][0], holeRing[0][1]]);
-        }
-        rings.push(holeRing);
-      }
-    }
-  }
-
-  return [rings];
+  return new SourceIndex().addShape(shape);
 }
 
 /**
- * Convert a polygon-clipping Polygon into PathPoint[][] (outer ring + holes)
+ * Convert a polygon-clipping Polygon into PathPoint[][] (outer ring + holes),
+ * re-cutting each run of the result from the source curve it came from — see
+ * `pathClipping.ts`. The clipper deals in polygons, but the shape that comes
+ * back out is beziers again, carrying the original anchors.
  */
 export function polygonToPathPoints(
   polygon: Polygon,
-  baseId: string
+  baseId: string,
+  index: SourceIndex
 ): { points: PathPoint[]; subPaths?: PathPoint[][] } {
   if (!polygon || polygon.length === 0) {
     return { points: [] };
   }
 
-  function ringToPathPoints(ring: Ring, subId: string): PathPoint[] {
-    // Drop the closing duplicated point if present
-    const pts = ring.slice(0, -1);
-    const result: PathPoint[] = [];
-
-    for (let i = 0; i < pts.length; i++) {
-      const curr = pts[i];
-      const prev = pts[(i - 1 + pts.length) % pts.length];
-      const next = pts[(i + 1) % pts.length];
-
-      // Calculate smooth tangent
-      const dx = next[0] - prev[0];
-      const dy = next[1] - prev[1];
-      const len = Math.hypot(dx, dy) || 1;
-      const hDist = Math.min(len * 0.25, 20);
-
-      result.push({
-        id: `${subId}_p${i}`,
-        x: Math.round(curr[0] * 100) / 100,
-        y: Math.round(curr[1] * 100) / 100,
-        type: 'rounded',
-        cp1: {
-          x: Math.round((curr[0] - (dx / len) * hDist) * 100) / 100,
-          y: Math.round((curr[1] - (dy / len) * hDist) * 100) / 100,
-        },
-        cp2: {
-          x: Math.round((curr[0] + (dx / len) * hDist) * 100) / 100,
-          y: Math.round((curr[1] + (dy / len) * hDist) * 100) / 100,
-        },
-      });
-    }
-
-    return result;
-  }
-
-  const outerPoints = ringToPathPoints(polygon[0], `${baseId}_outer`);
+  const outerPoints = ringToPathPoints(polygon[0], index, `${baseId}_outer`);
   const subPaths: PathPoint[][] = [];
 
   for (let i = 1; i < polygon.length; i++) {
-    const hole = ringToPathPoints(polygon[i], `${baseId}_hole_${i}`);
+    const hole = ringToPathPoints(polygon[i], index, `${baseId}_hole_${i}`);
     if (hole.length >= 3) {
       subPaths.push(hole);
     }
@@ -122,8 +67,9 @@ export function performBooleanOperation(
     // Slices intersecting shapes into constituent non-overlapping pieces
     // For 2 shapes: (A \ B), (B \ A), (A ∩ B)
     const resultShapes: VectorShape[] = [];
-    const s1 = shapeToMultiPolygon(shapes[0]);
-    const s2 = shapeToMultiPolygon(shapes[1]);
+    const index = new SourceIndex();
+    const s1 = index.addShape(shapes[0]);
+    const s2 = index.addShape(shapes[1]);
 
     const partAOnly = polygonClipping.difference(s1, s2);
     const partBOnly = polygonClipping.difference(s2, s1);
@@ -140,7 +86,8 @@ export function performBooleanOperation(
         const id = generateShapeId();
         const { points, subPaths } = polygonToPathPoints(
           polygon,
-          `${id}_${idx}_${pIdx}`
+          `${id}_${idx}_${pIdx}`,
+          index
         );
         if (points.length >= 3) {
           resultShapes.push({
@@ -166,8 +113,9 @@ export function performBooleanOperation(
 
   // Union, Subtract, Intersect, Xor
   let multiPolyResult: MultiPolygon;
-  const polyA = shapeToMultiPolygon(shapes[0]);
-  const polyB = shapeToMultiPolygon(shapes[1]);
+  const index = new SourceIndex();
+  const polyA = index.addShape(shapes[0]);
+  const polyB = index.addShape(shapes[1]);
 
   switch (operation) {
     case 'union':
@@ -203,7 +151,11 @@ export function performBooleanOperation(
 
   multiPolyResult.forEach((polygon, idx) => {
     const id = generateShapeId();
-    const { points, subPaths } = polygonToPathPoints(polygon, `${id}_${idx}`);
+    const { points, subPaths } = polygonToPathPoints(
+      polygon,
+      `${id}_${idx}`,
+      index
+    );
     if (points.length >= 3) {
       resultShapes.push({
         id,
@@ -213,7 +165,7 @@ export function performBooleanOperation(
         closed: true,
         fillColor: shapes[0].fillColor || '#6366f1',
         strokeColor: shapes[0].strokeColor || '#4338ca',
-        strokeWidth: shapes[0].strokeWidth || 2,
+        strokeWidth: shapes[0].strokeWidth ?? 0,
         opacity: 1,
         visible: true,
         locked: false,
@@ -283,11 +235,13 @@ export function flattenAllShapes(shapes: VectorShape[]): VectorShape {
     return visibleShapes[0];
   }
 
-  // Progressive union of all shapes
-  let accumPoly = shapeToMultiPolygon(visibleShapes[0]);
+  // Progressive union of all shapes, all registered against one index so the
+  // final outline can be rebuilt from whichever shape each run came from
+  const index = new SourceIndex();
+  let accumPoly = index.addShape(visibleShapes[0]);
 
   for (let i = 1; i < visibleShapes.length; i++) {
-    const nextPoly = shapeToMultiPolygon(visibleShapes[i]);
+    const nextPoly = index.addShape(visibleShapes[i]);
     try {
       accumPoly = polygonClipping.union(accumPoly, nextPoly);
     } catch (e) {
@@ -301,12 +255,16 @@ export function flattenAllShapes(shapes: VectorShape[]): VectorShape {
   }
 
   // Primary polygon
-  const { points, subPaths } = polygonToPathPoints(accumPoly[0], `${id}_flat`);
+  const { points, subPaths } = polygonToPathPoints(
+    accumPoly[0],
+    `${id}_flat`,
+    index
+  );
   const allSubPaths: PathPoint[][] = subPaths ? [...subPaths] : [];
 
   // If union resulted in multiple disjoint islands, include remaining islands as subPaths
   for (let i = 1; i < accumPoly.length; i++) {
-    const island = polygonToPathPoints(accumPoly[i], `${id}_island_${i}`);
+    const island = polygonToPathPoints(accumPoly[i], `${id}_island_${i}`, index);
     if (island.points.length >= 3) {
       allSubPaths.push(island.points);
     }

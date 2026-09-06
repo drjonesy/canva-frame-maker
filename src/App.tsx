@@ -492,8 +492,54 @@ function CanvaFrameApp() {
     recordHistory,
   ]);
 
-  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Q, W, E, A, L, M, P, Shift+H/V, arrows,
-  // Delete)
+  /**
+   * Move every selected shape one step up or down the stack.
+   *
+   * The keyboard twin of the Layers panel's chevrons, but selection-wide: with
+   * several layers picked, each one steps past the nearest *unselected*
+   * neighbour, so a multi-selection travels as a block and keeps its internal
+   * order instead of collapsing on itself. Sweeping from the leading edge means
+   * a shape that has already moved is never moved twice in one pass.
+   *
+   * A selection already pinned against the top (or bottom) moves nothing, and
+   * records no history entry — an undo that does nothing visible is worse than
+   * no undo at all.
+   */
+  const handleReorderSelection = useCallback(
+    (direction: 'up' | 'down') => {
+      if (selectedShapeIds.length === 0) return;
+
+      const next = [...shapes];
+      const isSelected = (s: VectorShape) => selectedShapeIds.includes(s.id);
+      let moved = false;
+
+      if (direction === 'up') {
+        // Higher index is nearer the front, so walk down from the top.
+        for (let i = next.length - 2; i >= 0; i--) {
+          if (isSelected(next[i]) && !isSelected(next[i + 1])) {
+            [next[i], next[i + 1]] = [next[i + 1], next[i]];
+            moved = true;
+          }
+        }
+      } else {
+        for (let i = 1; i < next.length; i++) {
+          if (isSelected(next[i]) && !isSelected(next[i - 1])) {
+            [next[i], next[i - 1]] = [next[i - 1], next[i]];
+            moved = true;
+          }
+        }
+      }
+
+      if (!moved) return;
+      recordHistory(shapes, dimensions);
+      setShapes(next);
+    },
+    [selectedShapeIds, shapes, dimensions, recordHistory]
+  );
+
+  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Q, W, E, A, L, M, P, Shift+H/V,
+  // Shift+(/), arrows, Delete). "S" opens the shapes flyout and is handled in
+  // ToolRail, which owns that state — leave it unbound here.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -556,6 +602,16 @@ function CanvaFrameApp() {
         handleFlip('horizontal');
       } else if (e.shiftKey && e.key.toLowerCase() === 'v') {
         handleFlip('vertical');
+      } else if (e.shiftKey && (e.key === ')' || e.code === 'Digit0')) {
+        // Shift+) / Shift+( walk the selection up and down the layer stack.
+        // The pair reads as the closing/opening bracket of the stack, and sits
+        // on 0/9 so it never collides with a tool letter. `e.code` is the
+        // fallback for layouts where shifted 0/9 are not parentheses.
+        e.preventDefault();
+        handleReorderSelection('up');
+      } else if (e.shiftKey && (e.key === '(' || e.code === 'Digit9')) {
+        e.preventDefault();
+        handleReorderSelection('down');
       } else if (nudgeDir) {
         // Without this the workspace scrolls under the arrow keys instead.
         e.preventDefault();
@@ -577,6 +633,7 @@ function CanvaFrameApp() {
     handleMirror,
     handleParallel,
     handleFlip,
+    handleReorderSelection,
     selectedPointIds,
     selectedShapeIds,
     selectedGuideIds,
