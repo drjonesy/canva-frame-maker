@@ -230,6 +230,11 @@ function CanvaFrameApp() {
   const nudgeStep = clampNudgeStep(Number(nudgeStepText));
   const lastNudgeAt = useRef(0);
 
+  // Lock Move (L): while on, dragging a selection with the Select tool is held
+  // to one axis. A mode rather than a held key, so a long drag does not need a
+  // finger parked on the keyboard for its whole length.
+  const [lockMove, setLockMove] = useState(false);
+
   /**
    * What the arrow keys act on. Guides win only when one was the last thing
    * picked — the same rule Delete follows — so a stale guide selection cannot
@@ -487,7 +492,7 @@ function CanvaFrameApp() {
     recordHistory,
   ]);
 
-  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Q, W, E, A, M, P, Shift+H/V, arrows,
+  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Q, W, E, A, L, M, P, Shift+H/V, arrows,
   // Delete)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -539,6 +544,8 @@ function CanvaFrameApp() {
         setShowRulers((v) => !v);
       } else if (e.key.toLowerCase() === 'g') {
         setShowGuides((v) => !v);
+      } else if (e.key.toLowerCase() === 'l') {
+        setLockMove((v) => !v);
       } else if (e.key.toLowerCase() === 'm') {
         handleMirror();
       } else if (e.key.toLowerCase() === 'p') {
@@ -1190,6 +1197,7 @@ function CanvaFrameApp() {
             showRulers={showRulers}
             showGuides={showGuides}
             snapToGuides={snapToGuides}
+            lockMove={lockMove}
             onAddGuide={handleAddGuide}
             onUpdateGuide={handleUpdateGuide}
             onDeleteGuide={handleDeleteGuide}
@@ -1273,7 +1281,10 @@ function CanvaFrameApp() {
         {/* Right: one scrolling column — the Align/Merge/Guides tabs, the
             Style/Move tabs, then Layers */}
         <aside
-          className="w-80 shrink-0 border-l h-full overflow-y-auto select-none border-gray-200 bg-white text-gray-800 dark:border-[#2A2A2A] dark:bg-[#1A1A1A] dark:text-neutral-200"
+          /* No `h-full`: an unresolved percentage height would beat the flex
+             row's stretch and leave the column only as tall as its content,
+             showing the page behind it under the last section. */
+          className="w-80 shrink-0 border-l min-h-0 overflow-y-auto select-none border-gray-200 bg-white text-gray-800 dark:border-[#2A2A2A] dark:bg-[#1A1A1A] dark:text-neutral-200"
         >
           <TabbedSection
             tabs={[
@@ -1360,6 +1371,13 @@ function CanvaFrameApp() {
                 icon: <Move className="w-3.5 h-3.5" />,
                 badge: (
                   <span className="text-[10px] font-mono text-gray-400 dark:text-neutral-500">
+                    {/* The lock is a mode that outlives this tab being open,
+                        so it says so even when the body is collapsed. */}
+                    {lockMove && (
+                      <span className="text-[#E11D48] dark:text-[#FB7185]">
+                        Locked ·{' '}
+                      </span>
+                    )}
                     {nudgeStep} px
                   </span>
                 ),
@@ -1369,6 +1387,8 @@ function CanvaFrameApp() {
                     step={nudgeStep}
                     target={nudgeTarget}
                     onStepTextChange={setNudgeStepText}
+                    lockMove={lockMove}
+                    onToggleLockMove={() => setLockMove((v) => !v)}
                   />
                 ),
               },

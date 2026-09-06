@@ -14,7 +14,7 @@ import {
   AlertTriangle,
   CheckCircle,
   ChevronDown,
-  Sparkles,
+  Frame,
   Upload,
   Sun,
   Moon,
@@ -93,18 +93,13 @@ export const Toolbar: React.FC<Props> = ({
           <div className={`w-7 h-7 rounded border flex items-center justify-center text-[#F43F5E] shadow-inner ${
             isDark ? 'bg-[#121212] border-[#2A2A2A]' : 'bg-[#F43F5E]/10 border-[#F43F5E]/30'
           }`}>
-            <Sparkles className="w-3.5 h-3.5 text-[#F43F5E]" />
+            <Frame className="w-3.5 h-3.5 text-[#F43F5E]" />
           </div>
           <div>
-            <div className={`text-xs font-bold tracking-tight flex items-center gap-1.5 font-sans ${
+            <div className={`text-xs font-bold tracking-tight font-sans ${
               isDark ? 'text-white' : 'text-gray-900'
             }`}>
               Canva Frame Maker
-              <span className={`text-[9px] uppercase font-mono font-semibold tracking-wider px-1.5 py-0.5 rounded border ${
-                isDark ? 'bg-[#F43F5E]/10 text-[#FB7185] border-[#F43F5E]/30' : 'bg-[#F43F5E]/10 text-[#E11D48] border-[#F43F5E]/30'
-              }`}>
-                PRO
-              </span>
             </div>
           </div>
         </div>

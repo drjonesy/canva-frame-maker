@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Theme is a deliberate choice stored in localStorage, not the OS preference:
+   ThemeProvider puts `.dark` / `[data-theme="dark"]` on <html>, so the `dark:`
+   utilities have to follow that instead of Tailwind 4's default
+   `prefers-color-scheme` media query. */
+@custom-variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
 @layer base {
   :root {
     --bg-canvas: #f3f4f6;

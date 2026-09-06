@@ -11,6 +11,22 @@ This project has no releases yet, so entries are grouped by date.
 
 #### Added
 
+- **Lock Move** (`L`), a toggle in the Move tab that constrains a Select-tool
+  drag to one axis: the selection goes dead horizontal or dead vertical, never
+  diagonal. It is a **mode, not a held key** — a long drag across the canvas
+  should not need a finger parked on the keyboard for its whole length — so `L`
+  flips it on and off, and the button in the Move tab shows and sets the same
+  state.
+  - The axis is chosen from the travel so far rather than latched at mouse
+    down, so the lock follows the pointer if the drag turns a corner.
+  - Guide snapping still applies on the free axis but is **ignored on the
+    locked one** — a pull onto a guide there would break the straight line the
+    lock exists to hold — and that guide's highlight stays off to match.
+  - Because a mode with no tell is a mode you forget you left on, it says so in
+    two places: the Move tab's badge reads `Locked ·` even while the tab is
+    collapsed, and the canvas meta pill carries **Lock Move (L)** whenever the
+    Select tool is up.
+
 - **An Add Anchor tool** (`A`), in the rail directly under the Pen, drawn as an
   small outlined anchor ring at the bottom left with a bold plus filling the
   top right (two overlapping rounded rectangles — at 16px a stroked cross heavy
@@ -42,6 +58,23 @@ This project has no releases yet, so entries are grouped by date.
 
 #### Changed
 
+- **The header brand is a frame, not a sparkle, and the PRO badge is gone.** The
+  top-left mark now uses lucide's `Frame` — the thing the app actually makes —
+  in place of the generic `Sparkles`, and the `PRO` chip beside the wordmark has
+  been removed; there is no paid tier for it to denote. The name stays
+  **Canva Frame Maker**.
+
+- **The canvas meta pill drops the canvas size.** It read
+  `X: 937 Y: 1058 · 1080 × 1080 px`; the trailing dimensions never change while
+  you work and are already stated in the New Project dialog and the export
+  panel, so the pill now carries only the live pointer position (and the
+  tool-specific hints that follow it).
+
+- **The empty-canvas heading is just "Blank Canvas".** It read
+  `Blank Canva Frame Canvas` — three nouns for one idea, and "Canva … Canvas" one
+  letter apart reads as a typo. The lines under it still say what the canvas is
+  for.
+
 - **A new icon for Parallel to Guide** (`ParallelIcon.tsx`, drawn by both the
   tool rail and the Rotate tab): a solid arrow on the left running into a solid
   upright bar on the right. The old drawing paired a dashed rule with a thin
@@ -52,6 +85,24 @@ This project has no releases yet, so entries are grouped by date.
   stroke of its own colour only to round its corners to match the bar.
 
 #### Fixed
+
+- **Dark mode reaches the right-hand column again.** Every `dark:` utility in
+  the app was dead code: Tailwind 4's built-in `dark` variant compiles to a
+  `prefers-color-scheme` media query, but `ThemeProvider` writes the chosen
+  theme onto `<html>` as a `.dark` class and a `data-theme` attribute, so the
+  toggle moved nothing the media query looks at. On a light OS the right
+  column, which is the one part of the chrome styled with `dark:` rather than
+  the `isDark` flag the panels use, stayed white next to a dark canvas.
+  [src/index.css](src/index.css) now declares
+  `@custom-variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *))`,
+  binding `dark:` to the app's own theme — which also fixes the root
+  background and the `dark:` colours in the Toolbar, Nudge, Rotate and Guides
+  panels.
+
+- **The right column fills the window height.** Its `h-full` resolved to `auto`
+  and, being an explicit height, beat the flex row's `stretch`, so the panel
+  ended with its last section and the page showed through below it — a seam
+  that only became obvious once the column was no longer white.
 
 - **The Pen no longer scribbles on a closed path.** With a closed shape
   selected it was appending to `points`, which has no visible end on a closed

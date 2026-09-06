@@ -40,6 +40,8 @@ interface Props {
   showRulers: boolean;
   showGuides: boolean;
   snapToGuides: boolean;
+  /** Lock Move (L): hold a Select-tool drag to a single axis. */
+  lockMove: boolean;
   onAddGuide: (guide: Guide) => void;
   onUpdateGuide: (id: string, position: number) => void;
   onDeleteGuide: (id: string) => void;
@@ -118,6 +120,7 @@ export const CanvasArea: React.FC<Props> = ({
   showRulers,
   showGuides,
   snapToGuides,
+  lockMove,
   onAddGuide,
   onUpdateGuide,
   onDeleteGuide,
@@ -562,27 +565,41 @@ export const CanvasArea: React.FC<Props> = ({
         selectedShapeIds.includes(s.id)
       );
 
+      // Lock Move holds the drag to a single axis. Which one is decided from
+      // the travel so far rather than latched at mouse down, so the lock
+      // follows the pointer if the drag turns a corner, and toggling L part
+      // way through a drag takes effect on the next move.
+      const axisLock: 'x' | 'y' | null = lockMove
+        ? Math.abs(dx) >= Math.abs(dy)
+          ? 'x'
+          : 'y'
+        : null;
+
       // Pull the moved box onto any guide it comes close to. The threshold is
       // in screen pixels, so the pull feels the same at every zoom level.
-      let moveX = dx;
-      let moveY = dy;
+      let moveX = axisLock === 'y' ? 0 : dx;
+      let moveY = axisLock === 'x' ? 0 : dy;
       const b = snapToGuides && showGuides ? unionBounds(moving) : null;
 
       if (b) {
         const snap = snapBoundsToGuides(
           {
-            minX: b.minX + dx,
-            minY: b.minY + dy,
-            maxX: b.maxX + dx,
-            maxY: b.maxY + dy,
+            minX: b.minX + moveX,
+            minY: b.minY + moveY,
+            maxX: b.maxX + moveX,
+            maxY: b.maxY + moveY,
           },
           guides,
           SNAP_PX / zoom
         );
-        moveX += snap.dx;
-        moveY += snap.dy;
-        if (snap.guideX !== snapHit.x || snap.guideY !== snapHit.y) {
-          setSnapHit({ x: snap.guideX, y: snap.guideY });
+        // A guide on the locked axis is ignored — nudging the shape onto it
+        // would break the straight line the lock is there to hold.
+        const hitX = axisLock === 'y' ? null : snap.guideX;
+        const hitY = axisLock === 'x' ? null : snap.guideY;
+        if (hitX !== null) moveX += snap.dx;
+        if (hitY !== null) moveY += snap.dy;
+        if (hitX !== snapHit.x || hitY !== snapHit.y) {
+          setSnapHit({ x: hitX, y: hitY });
         }
       } else if (snapHit.x !== null || snapHit.y !== null) {
         setSnapHit({ x: null, y: null });
@@ -900,7 +917,7 @@ export const CanvasArea: React.FC<Props> = ({
               style={{ transform: `scale(${1 / zoom})` }}
             >
               <div className="text-xl font-semibold tracking-tight mb-2 text-gray-500">
-                Blank Canva Frame Canvas
+                Blank Canvas
               </div>
               <div className="text-sm leading-relaxed max-w-sm text-gray-500">
                 Select the Pen Tool (E) or choose a Preset Shape from the toolbar to start
@@ -1465,10 +1482,6 @@ export const CanvasArea: React.FC<Props> = ({
         <span>
           X: {Math.round(mouseCanvasPos.x)} Y: {Math.round(mouseCanvasPos.y)}
         </span>
-        <span className={isDark ? 'text-[#444]' : 'text-gray-300'}>•</span>
-        <span>
-          {dimensions.width} × {dimensions.height} px
-        </span>
         {currentTool === 'pen' && (
           <>
             <span className={isDark ? 'text-[#444]' : 'text-gray-300'}>•</span>
@@ -1491,6 +1504,14 @@ export const CanvasArea: React.FC<Props> = ({
                 ? 'Add Anchor: Click to drop a point here'
                 : 'Add Anchor: Move onto the outline, then click'}
             </span>
+          </>
+        )}
+        {/* A mode with no other tell on the canvas — a drag that will not go
+            diagonally should say why before the drag, not after. */}
+        {lockMove && currentTool === 'select' && (
+          <>
+            <span className={isDark ? 'text-[#444]' : 'text-gray-300'}>•</span>
+            <span className="text-[#F43F5E] font-medium">Lock Move (L)</span>
           </>
         )}
       </div>

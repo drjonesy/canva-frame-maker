@@ -1,4 +1,5 @@
 import React from 'react';
+import { Lock } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import {
   NUDGE_MAX_STEP,
@@ -14,16 +15,24 @@ interface Props {
   /** What the arrow keys would move right now, for the panel's own note. */
   target: 'shapes' | 'points' | 'guides' | null;
   onStepTextChange: (text: string) => void;
+  /** Lock Move (L): a Select-tool drag is held to one axis. */
+  lockMove: boolean;
+  onToggleLockMove: () => void;
 }
 
 const PRESETS = [1, 5, 10, 50];
 
-/** Arrow-key nudging: the step the arrow keys move by. A tab body of the right column. */
+/**
+ * Moving the selection: the step the arrow keys nudge by, and the axis lock a
+ * mouse drag obeys. A tab body of the right column.
+ */
 export const NudgePanel: React.FC<Props> = ({
   stepText,
   step,
   target,
   onStepTextChange,
+  lockMove,
+  onToggleLockMove,
 }) => {
   const { isDark } = useTheme();
   const muted = isDark ? 'text-neutral-400' : 'text-gray-500';
@@ -88,6 +97,40 @@ export const NudgePanel: React.FC<Props> = ({
       <p className={`text-[10px] leading-relaxed ${muted}`}>
         Arrow keys move the selection by the step above; hold Shift to move{' '}
         {NUDGE_SHIFT_MULTIPLIER}× as far. {targetNote}
+      </p>
+
+      {/* Axis lock, for dragging rather than nudging */}
+      <div>
+        <div
+          className={`text-[10px] uppercase tracking-wider mb-1.5 font-semibold ${muted}`}
+        >
+          Dragging
+        </div>
+        <button
+          type="button"
+          onClick={onToggleLockMove}
+          title="Lock a drag to one axis (L)"
+          aria-keyshortcuts="L"
+          aria-pressed={lockMove}
+          className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg border text-[11px] font-medium transition-colors cursor-pointer ${
+            lockMove
+              ? 'bg-[#F43F5E]/10 border-[#F43F5E]/40 text-[#E11D48] dark:text-[#FB7185]'
+              : isDark
+              ? 'bg-[#242424] hover:bg-[#2E2E2E] border-[#2A2A2A] text-neutral-400'
+              : 'bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-500'
+          }`}
+        >
+          <Lock className="w-4 h-4 shrink-0" />
+          <span className="flex-1 text-left">Lock Move</span>
+          <span className="font-mono text-[10px] opacity-70">
+            {lockMove ? 'On · L' : 'Off · L'}
+          </span>
+        </button>
+      </div>
+
+      <p className={`text-[10px] leading-relaxed ${muted}`}>
+        With Lock Move on, dragging a selection with the Select tool keeps it
+        straight — horizontal or vertical, whichever way the drag is heading.
       </p>
     </div>
   );
