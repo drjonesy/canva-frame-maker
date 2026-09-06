@@ -96,6 +96,43 @@ function pathBounds(d: string): { minX: number; minY: number; width: number; hei
 }
 
 /**
+ * Path data of every shape the export would draw — visible, and with enough
+ * points to form a path — concatenated into one compound path.
+ */
+export function combineVisiblePaths(shapes: VectorShape[]): string {
+  return shapes
+    .filter((s) => s.visible && s.points.length >= 2)
+    .map((s) => shapeToSvgPath(s))
+    .join(' ')
+    .trim();
+}
+
+/**
+ * The page size the export will use: the artwork's bounding box, rounded the
+ * same way `exportToCanvaPdf` and `exportShapesToSvg` round it, so a size check
+ * outside this module reads exactly what gets written to the file.
+ */
+export function getExportSize(
+  shapes: VectorShape[],
+  dimensions: CanvasDimensions
+): { width: number; height: number; hasArtwork: boolean } {
+  const combinedPath = combineVisiblePaths(shapes);
+  if (!combinedPath) {
+    return {
+      width: Math.max(1, Math.round(dimensions.width)),
+      height: Math.max(1, Math.round(dimensions.height)),
+      hasArtwork: false,
+    };
+  }
+  const bounds = pathBounds(combinedPath);
+  return {
+    width: Math.max(1, Math.round(bounds.width)),
+    height: Math.max(1, Math.round(bounds.height)),
+    hasArtwork: true,
+  };
+}
+
+/**
  * Generate full SVG string for exporting
  */
 export function exportShapesToSvg(
@@ -103,15 +140,8 @@ export function exportShapesToSvg(
   dimensions: CanvasDimensions,
   asCanvaFramePlaceholder = true
 ): string {
-  const visibleShapes = shapes.filter((s) => s.visible && s.points.length >= 2);
   const clipId = 'canva_frame_clip_' + Date.now();
-
-  // Combine paths
-  let combinedPath = '';
-  visibleShapes.forEach((s) => {
-    combinedPath += ' ' + shapeToSvgPath(s);
-  });
-  combinedPath = combinedPath.trim();
+  const combinedPath = combineVisiblePaths(shapes);
 
   if (asCanvaFramePlaceholder && combinedPath) {
     return generateCanvaPlaceholderSvg(
@@ -148,13 +178,7 @@ export async function exportToCanvaPdf(
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
 
-  // Combine SVG path of visible shapes
-  const visibleShapes = shapes.filter((s) => s.visible && s.points.length >= 2);
-  let combinedPath = '';
-  visibleShapes.forEach((s) => {
-    combinedPath += ' ' + shapeToSvgPath(s);
-  });
-  combinedPath = combinedPath.trim();
+  const combinedPath = combineVisiblePaths(shapes);
 
   // Size the page to the artwork rather than to a canvas that no longer exists.
   const bounds = combinedPath

@@ -55,6 +55,13 @@ import {
   rotateShapes,
   ROTATE_DEFAULT_STEP,
 } from './utils/rotate';
+import {
+  buildProjectFile,
+  downloadProject,
+  isProjectFileName,
+  parseProjectFile,
+  projectNameFromFile,
+} from './utils/projectFile';
 import { buildRectPoints, cornerRadiusPx, createPresetShape } from './utils/shapePresets';
 import { parseSvgToVectorShapes, svgToRasterSource } from './utils/vectorTrace';
 
@@ -74,6 +81,7 @@ import { NudgePanel } from './components/NudgePanel';
 import { PenInspector } from './components/PenInspector';
 import { PropertiesPanel } from './components/PropertiesPanel';
 import { RotatePanel } from './components/RotatePanel';
+import { SaveProjectModal } from './components/SaveProjectModal';
 import { TabbedSection } from './components/TabbedSection';
 import { ToolRail } from './components/ToolRail';
 import { Toolbar } from './components/Toolbar';
@@ -119,8 +127,14 @@ function CanvaFrameApp() {
     future: [],
   });
 
+  // The saved project's name, which is also its `.cf.json` filename. Set by a
+  // save and by opening a file, so re-saving keeps the same name.
+  const [projectName, setProjectName] = useState('untitled-frame');
+  const openProjectInputRef = useRef<HTMLInputElement>(null);
+
   // Modals
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
   const [traceModalData, setTraceModalData] = useState<{
@@ -537,9 +551,81 @@ function CanvaFrameApp() {
     [selectedShapeIds, shapes, dimensions, recordHistory]
   );
 
-  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Q, W, E, A, L, M, P, Shift+H/V,
-  // Shift+(/), arrows, Delete). "S" opens the shapes flyout and is handled in
-  // ToolRail, which owns that state — leave it unbound here.
+  // --- Save / open a `.cf.json` project ---
+  // The SVG export is for Canva and is lossy on the way back in: it writes one
+  // merged path, so layer names, lock/visibility, `cornerRadiusPct`, guides and
+  // the anchor types you set do not survive a round trip. The project file is
+  // the editor's own model written out verbatim.
+
+  const handleSaveProject = useCallback(
+    (name: string) => {
+      const project = buildProjectFile(name, dimensions, shapes, guides);
+      downloadProject(project);
+      setProjectName(project.name);
+    },
+    [dimensions, shapes, guides]
+  );
+
+  /**
+   * Replace the whole session with a saved project.
+   *
+   * It is one undo step, so an accidental open can be walked back — though the
+   * guides are not restored by that undo, since guides are deliberately kept
+   * out of the shape history.
+   */
+  const handleLoadProject = useCallback(
+    (text: string, filename: string) => {
+      let loaded;
+      try {
+        loaded = parseProjectFile(text, filename);
+      } catch (err: any) {
+        alert(`Could not open ${filename}:\n\n${err.message || err}`);
+        return;
+      }
+
+      recordHistory(shapes, dimensions);
+
+      setDimensions(loaded.dimensions);
+      setShapes(loaded.shapes);
+      setGuides(loaded.guides);
+      setProjectName(loaded.name || projectNameFromFile(filename));
+      setSelectedShapeIds([]);
+      setSelectedPointIds([]);
+      setSelectedGuideIds([]);
+      setLastPicked('shape');
+      setCurrentTool('select');
+      setFitSignal((n) => n + 1);
+
+      if (loaded.warnings.length > 0) {
+        alert(
+          `Opened ${filename} with ${loaded.warnings.length} warning${
+            loaded.warnings.length > 1 ? 's' : ''
+          }:\n\n• ${loaded.warnings.join('\n• ')}`
+        );
+      }
+    },
+    [shapes, dimensions, recordHistory]
+  );
+
+  const handleOpenProject = useCallback(() => {
+    openProjectInputRef.current?.click();
+  }, []);
+
+  /**
+   * Ctrl/⌘+A: take every layer the canvas would let you pick by hand. Hidden
+   * and locked layers are passed over, so a Select All followed by Delete
+   * cannot quietly take out the layer that was locked to stop exactly that.
+   */
+  const handleSelectAll = useCallback(() => {
+    setLastPicked('shape');
+    setSelectedShapeIds(shapes.filter((s) => s.visible && !s.locked).map((s) => s.id));
+    setSelectedPointIds([]);
+    setSelectedGuideIds([]);
+  }, [shapes]);
+
+  // Keyboard shortcuts (Ctrl+S, Ctrl+O, Ctrl+A, Ctrl+Z, Ctrl+Y, Q, W, E, A, L, M, P,
+  // Shift+H/V, Shift+(/), arrows, Delete). "S" opens the shapes flyout and is
+  // handled in ToolRail, which owns that state — leave it unbound here.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -574,9 +660,23 @@ function CanvaFrameApp() {
         if (handleCopy()) e.preventDefault();
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
         if (handlePaste()) e.preventDefault();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+        // Takes over the browser's "save page", which is never what is wanted
+        // in an editor. There is no silent re-save: the app cannot write back
+        // to a file it was given, so every save goes through the dialog.
+        e.preventDefault();
+        if (!isSaveModalOpen) setIsSaveModalOpen(true);
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        handleOpenProject();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+        // Takes over the browser's "select all text", which on a canvas would
+        // only highlight the surrounding chrome.
+        e.preventDefault();
+        handleSelectAll();
       } else if (e.metaKey || e.ctrlKey || e.altKey) {
-        // Leave every other browser/OS chord alone: without this, Cmd+S,
-        // Cmd+A and Cmd+P all fall through and switch tools.
+        // Leave every other browser/OS chord alone: without this, Cmd+P falls
+        // through and switches tools.
         return;
       } else if (e.key.toLowerCase() === 'q') {
         selectTool('select');
@@ -634,6 +734,9 @@ function CanvaFrameApp() {
     handleParallel,
     handleFlip,
     handleReorderSelection,
+    handleOpenProject,
+    handleSelectAll,
+    isSaveModalOpen,
     selectedPointIds,
     selectedShapeIds,
     selectedGuideIds,
@@ -691,7 +794,14 @@ function CanvaFrameApp() {
   const handleFileSelected = (file: File, isNewProject: boolean) => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
 
-    if (ext === 'svg') {
+    if (isProjectFileName(file.name)) {
+      // A saved project is the whole session, so it always replaces — the
+      // new/import choice from the drop zone does not apply to it.
+      const reader = new FileReader();
+      reader.onload = (e) =>
+        handleLoadProject((e.target?.result as string) || '', file.name);
+      reader.readAsText(file);
+    } else if (ext === 'svg') {
       // Direct SVG vector parsing
       const reader = new FileReader();
       reader.onload = async (e) => {
@@ -751,13 +861,17 @@ function CanvaFrameApp() {
       };
       reader.readAsDataURL(file);
     } else {
-      alert('Supported file formats: SVG, PNG, JPG, JPEG, WEBP.');
+      alert('Supported file formats: .cf.json (saved project), SVG, PNG, JPG, JPEG, WEBP.');
     }
   };
 
   // --- Drag & Drop Import ---
   const isAnyModalOpen =
-    isNewModalOpen || isExportModalOpen || isGuideModalOpen || traceModalData.isOpen;
+    isNewModalOpen ||
+    isSaveModalOpen ||
+    isExportModalOpen ||
+    isGuideModalOpen ||
+    traceModalData.isOpen;
 
   const dragCarriesFile = (e: React.DragEvent) =>
     Array.from(e.dataTransfer.types || []).includes('Files');
@@ -1205,10 +1319,29 @@ function CanvaFrameApp() {
       onDragLeave={handleDragLeave}
       onDrop={resetDragState}
     >
+      {/* Saved-project picker. It lives here rather than in the Toolbar so
+          Ctrl/⌘+O can reach it without going through the menu. */}
+      <input
+        type="file"
+        ref={openProjectInputRef}
+        accept=".json,.cf.json,application/json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) handleFileSelected(file, true);
+          // Cleared so re-opening the same file fires `change` again.
+          e.target.value = '';
+        }}
+      />
+
       {/* 1. Top Header Toolbar */}
       <Toolbar
+        projectName={projectName}
+        onProjectNameChange={setProjectName}
         onNewProject={() => setIsNewModalOpen(true)}
         onFileSelected={handleFileSelected}
+        onSaveProject={() => setIsSaveModalOpen(true)}
+        onOpenProject={handleOpenProject}
         onExport={() => setIsExportModalOpen(true)}
         onUndo={handleUndo}
         onRedo={handleRedo}
@@ -1269,6 +1402,16 @@ function CanvaFrameApp() {
                 setSelectedShapeIds([id]);
               }
               setSelectedPointIds([]);
+            }}
+            onMarqueeSelect={(ids, additive) => {
+              setLastPicked('shape');
+              setSelectedShapeIds((prev) =>
+                additive ? [...prev, ...ids.filter((id) => !prev.includes(id))] : ids
+              );
+              // The points on show belong to whatever single shape was being
+              // edited; a box that changed the selection has left them behind.
+              setSelectedPointIds([]);
+              setSelectedGuideIds([]);
             }}
             onClearSelection={() => {
               setSelectedShapeIds([]);
@@ -1529,7 +1672,21 @@ function CanvaFrameApp() {
           setShapes([]);
           setSelectedShapeIds([]);
           setSelectedPointIds([]);
+          // A fresh project is not the file that was open before it, so the
+          // next save must not silently overwrite that one's name.
+          setProjectName('untitled-frame');
         }}
+      />
+
+      {/* Save Project (.cf.json) Modal */}
+      <SaveProjectModal
+        isOpen={isSaveModalOpen}
+        onClose={() => setIsSaveModalOpen(false)}
+        defaultName={projectName}
+        shapeCount={shapes.length}
+        guideCount={guides.length}
+        dimensions={dimensions}
+        onSave={handleSaveProject}
       />
 
       {/* Image Trace Modal (for raster PNG, JPG, WEBP) */}

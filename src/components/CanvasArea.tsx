@@ -16,7 +16,7 @@ import {
   rotateShapes,
   snapAngle,
 } from '../utils/rotate';
-import { buildRectPoints, cornerRadiusPx } from '../utils/shapePresets';
+import { scaleShapes } from '../utils/scale';
 import { createGuide, snapBoundsToGuides, unionBounds } from '../utils/guides';
 import {
   getShapeBounds,
@@ -47,6 +47,12 @@ interface Props {
   onDeleteGuide: (id: string) => void;
   onSelectGuide: (id: string, multi: boolean) => void;
   onSelectShape: (id: string, multi: boolean) => void;
+  /**
+   * A marquee drag has finished and caught `ids`. `additive` is the Shift key:
+   * true adds them to the standing selection, false replaces it — including
+   * with nothing, since a box drawn over empty canvas deselects.
+   */
+  onMarqueeSelect: (ids: string[], additive: boolean) => void;
   onClearSelection: () => void;
   onSelectPoint: (id: string, multi: boolean) => void;
   onUpdateShapes: (updated: VectorShape[]) => void;
@@ -106,6 +112,14 @@ const CLOSE_PATH_PX = 12;
  */
 const ADD_POINT_PX = 14;
 
+/**
+ * How far, in screen pixels, a drag from empty canvas has to travel before it
+ * counts as a marquee rather than a click. Below it the gesture is read as the
+ * plain click it almost certainly was, and clears the selection as before — a
+ * hand that twitches two pixels must not silently mean something else.
+ */
+const MARQUEE_MIN_PX = 3;
+
 export const CanvasArea: React.FC<Props> = ({
   dimensions,
   shapes,
@@ -126,6 +140,7 @@ export const CanvasArea: React.FC<Props> = ({
   onDeleteGuide,
   onSelectGuide,
   onSelectShape,
+  onMarqueeSelect,
   onClearSelection,
   onSelectPoint,
   onUpdateShapes,
@@ -170,6 +185,17 @@ export const CanvasArea: React.FC<Props> = ({
   const [guideDrag, setGuideDrag] = useState<{ id: string; axis: GuideAxis } | null>(
     null
   );
+
+  // The marquee box being dragged out of empty canvas, in canvas coordinates.
+  // `additive` is the Shift key as it was at mouse down, held for the whole
+  // drag so letting go of Shift before the button does not change the outcome.
+  const [marquee, setMarquee] = useState<{
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    additive: boolean;
+  } | null>(null);
 
   // Guide positions the current drag is snapped to, so they can light up.
   const [snapHit, setSnapHit] = useState<{ x: number | null; y: number | null }>({
@@ -502,9 +528,22 @@ export const CanvasArea: React.FC<Props> = ({
       return;
     }
 
-    // Clicking empty canvas in Select / DirectSelect mode clears selection
+    // Pressing empty canvas under Select starts a marquee. Nothing is cleared
+    // here: a Shift-drag has to add to the selection it started from, and the
+    // bare click that clears is settled on mouse up instead, once it is known
+    // that the pointer never went anywhere. Every other tool clears as before.
     if (!e.defaultPrevented) {
-      onClearSelection();
+      if (currentTool === 'select') {
+        setMarquee({
+          startX: canvasPos.x,
+          startY: canvasPos.y,
+          x: canvasPos.x,
+          y: canvasPos.y,
+          additive: e.shiftKey,
+        });
+      } else {
+        onClearSelection();
+      }
     }
   };
 
@@ -526,6 +565,11 @@ export const CanvasArea: React.FC<Props> = ({
         guideDrag.id,
         Math.round(guideDrag.axis === 'x' ? canvasPos.x : canvasPos.y)
       );
+      return;
+    }
+
+    if (marquee) {
+      setMarquee((m) => (m ? { ...m, x: canvasPos.x, y: canvasPos.y } : m));
       return;
     }
 
@@ -692,65 +736,21 @@ export const CanvasArea: React.FC<Props> = ({
       return;
     }
 
-    // 4. Resizing Shape via Bounding Box Handle
-    if (
-      dragTarget.type === 'resize' &&
-      dragTarget.initialBounds &&
-      activeShape &&
-      dragTarget.initialPoints
-    ) {
+    // 4. Resizing via Bounding Box Handle. The box encloses the whole
+    // selection, so the drag scales every selected shape as one block rather
+    // than only the active one.
+    if (dragTarget.type === 'resize' && dragTarget.initialBounds) {
       const b = dragTarget.initialBounds;
-
       const dir = dragTarget.resizeDir || 'se';
-      const {
-        minX: newMinX,
-        minY: newMinY,
-        maxX: newMaxX,
-        maxY: newMaxY,
-        scaleX,
-        scaleY,
-      } = resizeBounds(b, dir, dx, dy, e.shiftKey);
 
-      // A rectangle's corners keep their radius instead of being scaled with
-      // the box, so stretching one gives a longer rectangle rather than an
-      // oval. Other shapes — circles included — scale freely.
-      if (activeShape.cornerRadiusPct !== undefined) {
-        onUpdateActivePoints(
-          buildRectPoints(
-            activeShape.id,
-            newMinX,
-            newMinY,
-            newMaxX,
-            newMaxY,
-            cornerRadiusPx(
-              activeShape.cornerRadiusPct,
-              newMaxX - newMinX,
-              newMaxY - newMinY
-            )
-          )
-        );
-        return;
-      }
-
-      const resizedPoints = dragTarget.initialPoints.map((p) => ({
-        ...p,
-        x: newMinX + (p.x - b.minX) * scaleX,
-        y: newMinY + (p.y - b.minY) * scaleY,
-        cp1: p.cp1
-          ? {
-              x: newMinX + (p.cp1.x - b.minX) * scaleX,
-              y: newMinY + (p.cp1.y - b.minY) * scaleY,
-            }
-          : undefined,
-        cp2: p.cp2
-          ? {
-              x: newMinX + (p.cp2.x - b.minX) * scaleX,
-              y: newMinY + (p.cp2.y - b.minY) * scaleY,
-            }
-          : undefined,
-      }));
-
-      onUpdateActivePoints(resizedPoints);
+      onUpdateShapes(
+        scaleShapes(
+          dragTarget.initialShapes,
+          selectedShapeIds,
+          b,
+          resizeBounds(b, dir, dx, dy, e.shiftKey)
+        )
+      );
     }
   };
 
@@ -776,6 +776,46 @@ export const CanvasArea: React.FC<Props> = ({
         if (discarded) onDeleteGuide(guideDrag.id);
       }
 
+      if (marquee) {
+        // The threshold is in screen pixels, so the same wrist movement counts
+        // as the same gesture whether the canvas is zoomed in or out.
+        const spanX = Math.abs(marquee.x - marquee.startX) * zoom;
+        const spanY = Math.abs(marquee.y - marquee.startY) * zoom;
+
+        if (spanX < MARQUEE_MIN_PX && spanY < MARQUEE_MIN_PX) {
+          // A click, not a drag. Shift-clicking empty canvas is left alone:
+          // that gesture is about keeping a selection, not dropping it.
+          if (!marquee.additive) onClearSelection();
+        } else {
+          const box = {
+            minX: Math.min(marquee.startX, marquee.x),
+            minY: Math.min(marquee.startY, marquee.y),
+            maxX: Math.max(marquee.startX, marquee.x),
+            maxY: Math.max(marquee.startY, marquee.y),
+          };
+
+          // Touched, not enclosed: a box has to swallow a shape whole to catch
+          // it under a containment rule, which makes picking one large shape
+          // out of a crowd near impossible. Hidden and locked layers are
+          // passed over — neither takes a click on the canvas either.
+          const caught = shapes
+            .filter((s) => s.visible && !s.locked)
+            .filter((s) => {
+              const b = getShapeBounds(s);
+              return (
+                b.minX <= box.maxX &&
+                b.maxX >= box.minX &&
+                b.minY <= box.maxY &&
+                b.maxY >= box.minY
+              );
+            })
+            .map((s) => s.id);
+
+          onMarqueeSelect(caught, marquee.additive);
+        }
+      }
+
+      setMarquee(null);
       setGuideDrag(null);
       setIsPanning(false);
       setDragTarget(null);
@@ -786,24 +826,38 @@ export const CanvasArea: React.FC<Props> = ({
 
     window.addEventListener('mouseup', handleMouseUp);
     return () => window.removeEventListener('mouseup', handleMouseUp);
-  }, [guideDrag, showRulers, onDeleteGuide]);
+  }, [
+    guideDrag,
+    showRulers,
+    onDeleteGuide,
+    marquee,
+    shapes,
+    zoom,
+    onMarqueeSelect,
+    onClearSelection,
+  ]);
 
-  const activeBounds =
-    activeShape && currentTool === 'select' ? getShapeBounds(activeShape) : null;
-
-  // Rotation turns the whole selection, so its handle hangs off the box that
-  // encloses every selected shape rather than the active one alone. With a
-  // single shape selected the two boxes are identical. Locked shapes cannot be
-  // rotated, so a selection made only of them gets no handle.
-  const rotatable =
+  // Scaling and rotation both work on the whole selection, so they share one
+  // box: the one enclosing every selected shape rather than the active one
+  // alone. With a single shape picked the two are identical. Locked shapes are
+  // left out — they can be neither turned nor scaled, so a selection made only
+  // of them gets no chrome at all.
+  const transformable =
     currentTool === 'select'
       ? shapes.filter((s) => selectedShapeIds.includes(s.id) && !s.locked)
       : [];
-  const liveRotateBox = rotatable.length > 0 ? unionBounds(rotatable) : null;
-  const liveRotateCenter: Point2D | null = liveRotateBox
+  const liveSelectionBox = transformable.length > 0 ? unionBounds(transformable) : null;
+  const selectionBounds = liveSelectionBox
     ? {
-        x: (liveRotateBox.minX + liveRotateBox.maxX) / 2,
-        y: (liveRotateBox.minY + liveRotateBox.maxY) / 2,
+        ...liveSelectionBox,
+        width: liveSelectionBox.maxX - liveSelectionBox.minX,
+        height: liveSelectionBox.maxY - liveSelectionBox.minY,
+      }
+    : null;
+  const liveRotateCenter: Point2D | null = liveSelectionBox
+    ? {
+        x: (liveSelectionBox.minX + liveSelectionBox.maxX) / 2,
+        y: (liveSelectionBox.minY + liveSelectionBox.maxY) / 2,
       }
     : null;
 
@@ -812,7 +866,7 @@ export const CanvasArea: React.FC<Props> = ({
   // so following it live would have the handle and the pivot marker crawling
   // around under a pointer that is only sweeping an arc.
   const rotating = dragTarget?.type === 'rotate' ? dragTarget : null;
-  const rotateBox = rotating?.initialBounds ?? liveRotateBox;
+  const rotateBox = rotating?.initialBounds ?? selectionBounds;
   const rotateCenter = rotating?.center ?? liveRotateCenter;
 
   /** How far above the box the rotate handle floats, in screen pixels. */
@@ -868,7 +922,9 @@ export const CanvasArea: React.FC<Props> = ({
       className={`flex-1 relative overflow-hidden select-none transition-colors ${
         isDark ? 'bg-[#121212]' : 'bg-[#F3F4F6]'
       } ${
-        dragTarget?.type === 'resize'
+        marquee
+          ? 'cursor-crosshair'
+          : dragTarget?.type === 'resize'
           ? RESIZE_CURSORS[dragTarget.resizeDir || 'se']
           : dragTarget?.type === 'rotate'
           ? 'cursor-grabbing'
@@ -924,7 +980,8 @@ export const CanvasArea: React.FC<Props> = ({
                 creating your frame
               </div>
               <div className="text-sm leading-relaxed max-w-sm mt-3 font-mono text-gray-400">
-                — or drag &amp; drop an image onto the canvas (SVG, PNG, JPG, WEBP)
+                — or drag &amp; drop onto the canvas: a saved .cf.json project, or
+                an image (SVG, PNG, JPG, WEBP)
               </div>
             </div>
           </div>
@@ -1292,13 +1349,13 @@ export const CanvasArea: React.FC<Props> = ({
               the box is axis-aligned, so it would swell and shrink around a
               shape that is only turning, and its handles resize the wrong
               thing while the pointer is sweeping an arc. */}
-          {activeBounds && currentTool === 'select' && !rotating && (
+          {selectionBounds && currentTool === 'select' && !rotating && (
             <g className="bounding-box-layer pointer-events-none">
               <rect
-                x={activeBounds.minX}
-                y={activeBounds.minY}
-                width={activeBounds.width}
-                height={activeBounds.height}
+                x={selectionBounds.minX}
+                y={selectionBounds.minY}
+                width={selectionBounds.width}
+                height={selectionBounds.height}
                 fill="none"
                 stroke="#F43F5E"
                 strokeWidth={1.5 / zoom}
@@ -1307,29 +1364,29 @@ export const CanvasArea: React.FC<Props> = ({
 
               {/* Handles: nw, ne, se, sw, n, s, e, w */}
               {[
-                { dir: 'nw', x: activeBounds.minX, y: activeBounds.minY },
-                { dir: 'ne', x: activeBounds.maxX, y: activeBounds.minY },
-                { dir: 'se', x: activeBounds.maxX, y: activeBounds.maxY },
-                { dir: 'sw', x: activeBounds.minX, y: activeBounds.maxY },
+                { dir: 'nw', x: selectionBounds.minX, y: selectionBounds.minY },
+                { dir: 'ne', x: selectionBounds.maxX, y: selectionBounds.minY },
+                { dir: 'se', x: selectionBounds.maxX, y: selectionBounds.maxY },
+                { dir: 'sw', x: selectionBounds.minX, y: selectionBounds.maxY },
                 {
                   dir: 'n',
-                  x: (activeBounds.minX + activeBounds.maxX) / 2,
-                  y: activeBounds.minY,
+                  x: (selectionBounds.minX + selectionBounds.maxX) / 2,
+                  y: selectionBounds.minY,
                 },
                 {
                   dir: 's',
-                  x: (activeBounds.minX + activeBounds.maxX) / 2,
-                  y: activeBounds.maxY,
+                  x: (selectionBounds.minX + selectionBounds.maxX) / 2,
+                  y: selectionBounds.maxY,
                 },
                 {
                   dir: 'w',
-                  x: activeBounds.minX,
-                  y: (activeBounds.minY + activeBounds.maxY) / 2,
+                  x: selectionBounds.minX,
+                  y: (selectionBounds.minY + selectionBounds.maxY) / 2,
                 },
                 {
                   dir: 'e',
-                  x: activeBounds.maxX,
-                  y: (activeBounds.minY + activeBounds.maxY) / 2,
+                  x: selectionBounds.maxX,
+                  y: (selectionBounds.minY + selectionBounds.maxY) / 2,
                 },
               ].map((h) => (
                 <rect
@@ -1346,27 +1403,153 @@ export const CanvasArea: React.FC<Props> = ({
                     e.stopPropagation();
                     setDragTarget({
                       type: 'resize',
-                      shapeId: activeShape!.id,
+                      shapeId: transformable[0].id,
                       resizeDir: h.dir as any,
                       startX: mouseCanvasPos.x,
                       startY: mouseCanvasPos.y,
                       initialShapes: shapes,
-                      initialPoints: activeShape!.points,
-                      initialBounds: activeBounds,
+                      initialBounds: selectionBounds,
                     });
                   }}
                 />
               ))}
+
+              {/* Live width and height of the box, in canvas px, drawn as a
+                  dimension line: an end tick at each extent, a rule running
+                  between them, and the number sitting in a gap in the middle of
+                  that rule. With more than one shape picked this is the union —
+                  the outer span across the whole selection — rather than any one
+                  shape's own size, which is the only measurement that means
+                  anything while they are being scaled or aligned as a group.
+                  Grey rather than the selection's rose: it is a readout, not
+                  something to grab, and it should not compete with the handles
+                  that are. */}
+              {(() => {
+                /** Screen px → canvas units, so the chrome holds its size. */
+                const s = (px: number) => px / zoom;
+                const color = isDark ? '#D1D5DB' : '#9CA3AF';
+                const FONT = 13;
+                /** Half-length of the tick capping each end of the rule. */
+                const CAP = 5;
+                /** How far the rule floats off the box. */
+                const OFFSET = 24;
+                /** Clear space between the rule and the number. */
+                const PAD = 7;
+
+                const cx = (selectionBounds.minX + selectionBounds.maxX) / 2;
+                const cy = (selectionBounds.minY + selectionBounds.maxY) / 2;
+                const wLabel = `${Math.round(selectionBounds.width)}`;
+                const hLabel = `${Math.round(selectionBounds.height)}`;
+
+                // JetBrains Mono advances 0.6em a glyph, so the gap each label
+                // needs can be measured off the string rather than the DOM.
+                const wGap = s(wLabel.length * FONT * 0.6 + PAD * 2) / 2;
+                const hGap = s(FONT + PAD * 2) / 2;
+
+                const y = selectionBounds.maxY + s(OFFSET);
+                const x = selectionBounds.maxX + s(OFFSET);
+
+                // On a box narrower than its own label the rule would run
+                // backwards, so the ticks and the number stand alone.
+                const wRule = cx - wGap > selectionBounds.minX;
+                const hRule = cy - hGap > selectionBounds.minY;
+
+                const line = { stroke: color, strokeWidth: s(1) };
+                const label = {
+                  fill: color,
+                  fontSize: s(FONT),
+                  fontFamily: "'JetBrains Mono', monospace",
+                  textAnchor: 'middle' as const,
+                  dominantBaseline: 'central' as const,
+                };
+
+                return (
+                  <>
+                    {/* Width */}
+                    <line
+                      x1={selectionBounds.minX}
+                      y1={y - s(CAP)}
+                      x2={selectionBounds.minX}
+                      y2={y + s(CAP)}
+                      {...line}
+                    />
+                    <line
+                      x1={selectionBounds.maxX}
+                      y1={y - s(CAP)}
+                      x2={selectionBounds.maxX}
+                      y2={y + s(CAP)}
+                      {...line}
+                    />
+                    {wRule && (
+                      <>
+                        <line
+                          x1={selectionBounds.minX}
+                          y1={y}
+                          x2={cx - wGap}
+                          y2={y}
+                          {...line}
+                        />
+                        <line
+                          x1={cx + wGap}
+                          y1={y}
+                          x2={selectionBounds.maxX}
+                          y2={y}
+                          {...line}
+                        />
+                      </>
+                    )}
+                    <text x={cx} y={y} {...label}>
+                      {wLabel}
+                    </text>
+
+                    {/* Height */}
+                    <line
+                      x1={x - s(CAP)}
+                      y1={selectionBounds.minY}
+                      x2={x + s(CAP)}
+                      y2={selectionBounds.minY}
+                      {...line}
+                    />
+                    <line
+                      x1={x - s(CAP)}
+                      y1={selectionBounds.maxY}
+                      x2={x + s(CAP)}
+                      y2={selectionBounds.maxY}
+                      {...line}
+                    />
+                    {hRule && (
+                      <>
+                        <line
+                          x1={x}
+                          y1={selectionBounds.minY}
+                          x2={x}
+                          y2={cy - hGap}
+                          {...line}
+                        />
+                        <line
+                          x1={x}
+                          y1={cy + hGap}
+                          x2={x}
+                          y2={selectionBounds.maxY}
+                          {...line}
+                        />
+                      </>
+                    )}
+                    <text x={x} y={cy} {...label}>
+                      {hLabel}
+                    </text>
+                  </>
+                );
+              })()}
             </g>
           )}
 
           {/* Rotate handle, on the box enclosing the whole selection */}
           {rotateBox && rotateCenter && currentTool === 'select' && (
             <g className="rotate-layer pointer-events-none">
-              {/* With several shapes picked the resize box above covers only the
-                  active one, so the selection's own box is drawn faintly to
-                  show what the handle will turn. */}
-              {(rotatable.length > 1 || rotating) && (
+              {/* Mid-rotation the resize box above is hidden, so the box the
+                  turn started from is drawn faintly in its place. */}
+              {rotating && (
                 <rect
                   x={rotateBox.minX}
                   y={rotateBox.minY}
@@ -1416,20 +1599,16 @@ export const CanvasArea: React.FC<Props> = ({
               <g
                 className="pointer-events-auto cursor-grab active:cursor-grabbing"
                 onMouseDown={(e) => {
-                  if (!liveRotateBox || !liveRotateCenter) return;
+                  if (!selectionBounds || !liveRotateCenter) return;
                   e.stopPropagation();
                   setRotatePreview(0);
                   setDragTarget({
                     type: 'rotate',
-                    shapeId: rotatable[0].id,
+                    shapeId: transformable[0].id,
                     startX: mouseCanvasPos.x,
                     startY: mouseCanvasPos.y,
                     initialShapes: shapes,
-                    initialBounds: {
-                      ...liveRotateBox,
-                      width: liveRotateBox.maxX - liveRotateBox.minX,
-                      height: liveRotateBox.maxY - liveRotateBox.minY,
-                    },
+                    initialBounds: selectionBounds,
                     center: liveRotateCenter,
                     startAngle: pointerAngle(liveRotateCenter, mouseCanvasPos),
                   });
@@ -1454,6 +1633,25 @@ export const CanvasArea: React.FC<Props> = ({
                 />
               </g>
             </g>
+          )}
+
+          {/* The marquee box. Drawn last so it stays on top of every shape and
+              every piece of selection chrome it is dragged across, and with a
+              faint fill so the area it covers reads as one region rather than
+              four lines. */}
+          {marquee && (
+            <rect
+              x={Math.min(marquee.startX, marquee.x)}
+              y={Math.min(marquee.startY, marquee.y)}
+              width={Math.abs(marquee.x - marquee.startX)}
+              height={Math.abs(marquee.y - marquee.startY)}
+              fill="#F43F5E"
+              fillOpacity={0.08}
+              stroke="#F43F5E"
+              strokeWidth={1 / zoom}
+              strokeDasharray={`${4 / zoom},${3 / zoom}`}
+              className="pointer-events-none"
+            />
           )}
         </svg>
       </div>

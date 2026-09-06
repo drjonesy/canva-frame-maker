@@ -13,7 +13,7 @@ interface Props {
 
 type Zone = 'new' | 'import' | null;
 
-const SUPPORTED = 'SVG, PNG, JPG, JPEG, WEBP';
+const SUPPORTED = '.cf.json, SVG, PNG, JPG, JPEG, WEBP';
 
 export const DropZoneOverlay: React.FC<Props> = ({
   isVisible,
@@ -75,6 +75,10 @@ export const DropZoneOverlay: React.FC<Props> = ({
             </h2>
             <p className={`text-xs font-mono ${isDark ? 'text-neutral-400' : 'text-gray-500'}`}>
               {SUPPORTED} • one file at a time
+            </p>
+            <p className={`text-[11px] font-mono ${isDark ? 'text-neutral-500' : 'text-gray-400'}`}>
+              {/* A saved project is the whole session, so neither zone applies. */}
+              A .cf.json project always opens in place of the current one
             </p>
           </div>
         </div>

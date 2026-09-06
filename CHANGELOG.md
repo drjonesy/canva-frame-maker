@@ -11,6 +11,179 @@ This project has no releases yet, so entries are grouped by date.
 
 #### Added
 
+- **Width and height dimension lines on the selection box.** Under Select, the
+  bounding box now carries its measurements in canvas px: a rule below the
+  bottom edge for the width and one right of the right edge for the height, each
+  capped with an end tick at the extents it spans and broken by a gap where the
+  number sits. Both track the box live, so they update while a selection is
+  dragged or scaled.
+  - With more than one shape selected the numbers are the outer span of the
+    whole selection rather than any one shape's own size — the union box is what
+    scaling and aligning actually act on, so per-shape numbers there would
+    describe something no handle moves. A single selection's box *is* that
+    shape, so its own size is what shows.
+  - Grey rather than the selection's rose (`#9CA3AF`, lightening to `#D1D5DB` in
+    dark mode): it is a readout, not something to grab, and it should not
+    compete with the handles that are.
+  - 13 px numbers, the rules held 24 px off the box so they clear the edge
+    handles. The gap is measured from the label string against JetBrains Mono's
+    0.6em advance rather than the DOM; on a box narrower than its own label the
+    rule would run backwards, so there the ticks and number stand alone. Hidden
+    mid-rotation along with the rest of the box.
+
+- **"Warn on Small Layers", under a new settings gear in the Layers header.** The
+  gear sits beside `LAYERS (n)` and opens a small popup of settings for that
+  section; with the toggle inside it on, any layer whose own bounding box would
+  be too small for Canva gets a warning triangle next to its name.
+  - The popup closes on a click outside it or on Escape, and hangs below the
+    header inset to the section's own padding — the right column clips
+    horizontally, so a popup anchored to the gear itself would be cut off.
+  - `CollapsibleSection` grew an `actions` slot for the gear, and its header is
+    now a row of two toggle buttons rather than one: a button cannot be nested
+    inside a button, and without the split every click on the gear would also
+    collapse the section. The rest of the header still toggles it.
+  - It answers a question the export dialog does not: the normal export combines
+    every visible layer into one cropped page, so a small layer is only a problem
+    when each layer is exported as its own frame. That is why the setting is
+    **off by default**, and why it lives behind a gear rather than in the panel
+    body — a rose triangle on a layer that exports perfectly well as part of the
+    whole would be noise, and so would a permanent switch about it.
+  - Rose for under Canva's 40 px minimum, amber for a layer that clears it but
+    only just, matching the two levels the export dialog already reports. The
+    tooltip gives the layer's own exported page size and the scale factor that
+    would clear it.
+  - A count rides in the section header, so a collapsed panel still shows that
+    something is flagged.
+  - Hidden layers are measured too: hiding a layer says nothing about how big it
+    is, and one that read "fine" only because it was hidden would be a trap on
+    the way to exporting it.
+  - The setting persists in `localStorage` (`canva_frame_layer_size_warnings`).
+    It describes how the frame will be used, not the artwork, so it is kept out
+    of the project file and out of undo history.
+  - New `checkShapeImportSize` in
+    [src/utils/importSizeCheck.ts](src/utils/importSizeCheck.ts), reusing the
+    same measurement the export dialog runs on the whole frame.
+
+#### Changed
+
+- **The resize box now covers the whole selection, and its handles scale every
+  selected layer.** It used to be drawn around the active shape alone, so
+  dragging a handle with several layers picked resized one of them and left the
+  rest where they were.
+  - The selection scales as one rigid block: each shape keeps its position and
+    proportions relative to the others, the same way the rotate handle already
+    turned them together.
+  - Rotation and scaling now share that one box, so the faint second outline
+    that used to mark the rotate box for a multi-layer selection is gone — it
+    would sit exactly on top of the resize box. It is still drawn mid-rotation,
+    where the resize box is hidden.
+  - Locked layers are left out of the box and out of the scale, matching what
+    rotation already did — a scale must not be a way around the lock.
+  - Rectangles carrying `cornerRadiusPct` are still rebuilt from their scaled
+    bounds rather than stretched, so their corners keep their radius; that now
+    holds for each rectangle inside a multi-layer selection.
+  - New `scaleShapes` in [src/utils/scale.ts](src/utils/scale.ts), alongside
+    `rotateShapes`.
+
+#### Added
+
+- **Marquee selection on the canvas.** With the Select tool (Q), press on an
+  empty part of the canvas and drag: a dashed box scales out under the pointer,
+  and releasing selects every layer it caught.
+  - **A box catches what it touches, not only what it swallows whole.** A
+    containment rule makes picking one large shape out of a crowd near
+    impossible, since the box would have to start outside it on every side.
+  - Hidden and locked layers are passed over, matching the canvas itself —
+    neither takes a click there either.
+  - **Shift adds to the standing selection instead of replacing it**, and the
+    key is read at mouse down and held for the whole drag, so letting go of
+    Shift before the button does not change the outcome.
+  - **The selection is not cleared until the button comes back up.** Clearing on
+    mouse down would leave a Shift-drag nothing to add to, and would make the
+    old selection vanish the instant a drag began. A gesture that travels less
+    than 3 screen pixels is read as the plain click it almost certainly was and
+    clears as before; the threshold is in screen pixels, so the same wrist
+    movement means the same thing at every zoom level.
+  - Drawn last, above every shape and every piece of selection chrome, with a
+    faint fill so the covered area reads as one region rather than four lines.
+    The dashes and the outline are scaled by `1/zoom`, like the rest of the
+    chrome, so they stay a constant width on screen.
+  - Only the Select tool marquees. Under the Pen and Add Anchor an empty-canvas
+    drag already means something, and Sub-Select's would want to gather anchor
+    points rather than layers.
+
+- **`Ctrl/⌘+A` selects all layers.** It takes over the browser's "select all
+  text", which on a canvas would only highlight the surrounding chrome, and is
+  ignored while a text field has focus so renaming a project still works.
+  - **Hidden and locked layers are left out**, so a Select All followed by
+    Delete cannot quietly take out the layer that was locked to stop exactly
+    that.
+  - Guide and anchor-point selections are dropped on the way, since the points
+    on show belong to whichever single shape was being edited.
+
+- **The project name is editable in the top toolbar**, to the right of the
+  trash button at the end of the left-hand group. Click it to rename, click off — or press Enter — to confirm; Escape abandons
+  the edit. A pencil appears on hover, since a name that only looks like a
+  label gives no sign it can be typed into.
+  - It reads and writes the same `projectName` App holds for saving, so it
+    shows the name a save would use: it follows an **Open Project**, updates
+    after a **Save Project**, and resets to `untitled-frame` on **New Blank
+    Project**. The save dialog still seeds from it, so renaming here means the
+    dialog opens on the new name.
+  - The typed name goes through `sanitizeProjectName` on confirm rather than at
+    save time, so the header shows the name that will actually be written —
+    "Instagram Post / Square" settles as "Instagram Post - Square" in place —
+    and an emptied field falls back to `untitled-frame` instead of leaving the
+    project nameless.
+  - The draft is kept apart from the committed name, so Escape never touches
+    app state, and the field's keys are stopped from bubbling: the window
+    shortcuts already ignore inputs, but `Q`/`W`/`E` typed into a name must not
+    reach them by any route.
+  - The input grows with the text and is capped at 30ch; the button truncates
+    at 26ch, so a long name cannot push the Project menu off its spot.
+
+- **Save and open a project as `<name>.cf.json`** (`utils/projectFile.ts`,
+  `SaveProjectModal.tsx`). **Project → Save Project** (`Ctrl/⌘+S`) writes the
+  whole session to a file; **Project → Open Project** (`Ctrl/⌘+O`), or dropping
+  the file on the canvas, brings it back. Entirely client-side — a Blob and an
+  anchor out, a `FileReader` in; no backend and nothing stored in the browser.
+  - **The SVG export is not a substitute, because it does not round-trip.** It
+    writes one merged `fill-rule="evenodd"` path, and re-importing it re-derives
+    geometry through the SVG parser, so layer names, visibility and lock flags,
+    `cornerRadiusPct`, compound `subPaths`, guides, the canvas size and the
+    anchor types you set (`straight`/`rounded`/`break` are inferred from
+    tangents on import) all come back changed or not at all. The `.cf.json` file
+    is the editor's own model written out verbatim: saving, reloading the page,
+    opening the file and saving again produces a byte-identical file bar the
+    timestamp and JSON key order — verified by driving the built app.
+  - Saved with two-space indentation and a `format` / `version` stamp. `format`
+    is checked on the way in, so a stray `.json` is refused with a message
+    rather than half-loading.
+  - **A malformed file costs at most a layer, not the project.** Every field is
+    coerced with a default and anything unusable is dropped with a warning
+    collected for one summary alert: a layer with no valid points is skipped, a
+    handle that does not parse is dropped rather than faked (a zero-length
+    handle is a different curve), and `strokeWidth` reads a legitimate `0`
+    rather than treating it as missing. Only two things throw: JSON that will
+    not parse, and a missing `format` stamp.
+  - **Duplicate ids are re-minted on load** — shape ids across the file, and
+    point ids across the *whole project* rather than per shape, since nudging
+    and point alignment match ids over every layer, so one id shared by two
+    anchors in different layers would move both at once.
+  - Opening is one undo step, and it fits the canvas to the restored artwork.
+    The guides come back too, but an undo of the open does not remove them —
+    guides are deliberately kept out of the shape history.
+  - Slashes and the other filename-hostile characters are stripped from the
+    name, so the "Instagram Post / Square" preset saves as
+    `Instagram Post - Square.cf.json` rather than looking like a path. The
+    dialog shows the exact filename it will write, and the name is remembered
+    for the next save; **New Blank Project** resets it, so a fresh project
+    cannot quietly adopt the previous file's name.
+  - `Ctrl/⌘+S` takes over the browser's "save page", which is never what is
+    wanted in an editor. There is no silent re-save: a browser cannot write back
+    to a file it was handed, so every save goes through the dialog and the
+    browser's own download flow.
+
 - **`Shift+)` and `Shift+(` move the selection up and down the layer stack** —
   the keyboard twin of the Layers panel's chevrons. The pair reads as the
   closing/opening bracket of the stack and sits on `0`/`9`, so it collides with
@@ -29,6 +202,35 @@ This project has no releases yet, so entries are grouped by date.
 - **`S` opens the shapes flyout** in the tool rail, and `Escape` closes it. The
   key is handled in `ToolRail` rather than App's keymap because the flyout keeps
   its own open/closed state; App leaves `s` unbound, so nothing collides.
+
+- **The export dialog now catches frames Canva will refuse to import for being
+  too small** (`utils/importSizeCheck.ts`). Canva's minimum design size is
+  40 × 40 px, and a smaller upload is rejected with "The dimensions of this
+  document are too small to import." Nothing was wrong with the exported file, so
+  the failure only showed up in Canva, after the download.
+  - **The trap is that the export is cropped to the artwork, not the canvas**, so
+    it is the shape's own bounding box that Canva measures. Cutting a thin edge
+    strip off a larger shape is the usual way in: the parent imports fine and the
+    strip — a few px tall — is rejected on its own.
+  - Three states, off the shortest side of the exported page: under 40 px is
+    **blocked** with an `Export Anyway` escape (the file is valid, Canva just
+    won't take it); under 100 px is a non-blocking caution, since it imports but
+    arrives too small to place comfortably; anything larger reports the page size
+    in the existing green "Ready for Canva Export" line. The blocked state also
+    names the scale that would fix it and the size that lands at, and says to
+    scale every piece of a multi-part frame by the same factor so the pieces
+    still line up back in Canva.
+  - The size is also printed next to **Select Export Format for Canva** on every
+    export, coloured by state, so the number is visible before the download
+    rather than after the rejection.
+  - **The check measures what the exporter actually writes**, not a second
+    estimate of it: `canvaExport.ts` now exposes `combineVisiblePaths` and
+    `getExportSize`, and the PDF, the SVG and the warning all read the same
+    bounding box, rounded the same way. The page is measured in PDF points, which
+    Canva reads as at least a pixel, so comparing points against 40 is the
+    conservative direction to be wrong in.
+  - An `Export Anyway` covers only the artwork it was granted for — reopening the
+    dialog, or changing the size, puts the block back.
 
 #### Changed
 

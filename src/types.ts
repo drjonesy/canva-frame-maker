@@ -74,6 +74,23 @@ export interface OverlayCheckResult {
   collisions: OverlayCollision[];
 }
 
+/**
+ * Whether the exported page clears Canva's minimum import size.
+ * `tooSmall` will be rejected by Canva; `tight` imports but only just.
+ */
+export interface ImportSizeCheckResult {
+  status: 'empty' | 'tooSmall' | 'tight' | 'ok';
+  /** The exported page, in px — the artwork's bounding box, not the canvas. */
+  width: number;
+  height: number;
+  smallestSide: number;
+  minimum: number;
+  /** Factor that would lift the smallest side clear of the minimum. */
+  suggestedScale: number;
+  suggestedWidth: number;
+  suggestedHeight: number;
+}
+
 export type ObjectAlignType =
   | 'left'
   | 'center'

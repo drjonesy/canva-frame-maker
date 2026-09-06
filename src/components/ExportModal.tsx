@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { CanvasDimensions, VectorShape } from '../types';
 import { detectOverlays } from '../utils/overlayDetector';
+import { checkImportSize } from '../utils/importSizeCheck';
 import {
   downloadFile,
   exportShapesToSvg,
@@ -38,16 +39,33 @@ export const ExportModal: React.FC<Props> = ({
   const { isDark } = useTheme();
   const [copied, setCopied] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [sizeOverride, setSizeOverride] = useState(false);
 
   // Overlay detection
   const overlayResult = useMemo(() => {
     return detectOverlays(shapes);
   }, [shapes]);
 
+  // Canva rejects an upload smaller than its minimum design size, and the
+  // exported page is cropped to the artwork, so a thin sliver fails to import.
+  const sizeCheck = useMemo(
+    () => checkImportSize(shapes, dimensions),
+    [shapes, dimensions]
+  );
+
+  // An "export anyway" only covers the artwork it was granted for: reopening the
+  // dialog, or changing the size, puts the block back.
+  useEffect(() => {
+    setSizeOverride(false);
+  }, [isOpen, sizeCheck.smallestSide]);
+
+  const sizeBlocked = sizeCheck.status === 'tooSmall' && !sizeOverride;
+  const exportBlocked = overlayResult.hasOverlay || sizeBlocked;
+
   if (!isOpen) return null;
 
   const handleDownloadPdf = async () => {
-    if (overlayResult.hasOverlay) return;
+    if (exportBlocked) return;
     setIsExportingPdf(true);
     try {
       const pdfBytes = await exportToCanvaPdf(shapes, dimensions);
@@ -64,7 +82,7 @@ export const ExportModal: React.FC<Props> = ({
   };
 
   const handleDownloadSvg = () => {
-    if (overlayResult.hasOverlay) return;
+    if (exportBlocked) return;
     const svgStr = exportShapesToSvg(shapes, dimensions, false);
     downloadFile(
       svgStr,
@@ -74,7 +92,7 @@ export const ExportModal: React.FC<Props> = ({
   };
 
   const handleCopySvg = () => {
-    if (overlayResult.hasOverlay) return;
+    if (exportBlocked) return;
     const svgStr = exportShapesToSvg(shapes, dimensions, false);
     navigator.clipboard.writeText(svgStr);
     setCopied(true);
@@ -107,7 +125,7 @@ export const ExportModal: React.FC<Props> = ({
         {/* Body */}
         <div className="p-6 space-y-6 overflow-y-auto">
           {/* Overlay Warning / Blocked State */}
-          {overlayResult.hasOverlay ? (
+          {overlayResult.hasOverlay && (
             <div className={`p-4 rounded border space-y-3 ${
               isDark ? 'border-amber-500/30 bg-amber-950/20 text-amber-200' : 'border-amber-300 bg-amber-50 text-amber-900'
             }`}>
@@ -162,7 +180,92 @@ export const ExportModal: React.FC<Props> = ({
                 </button>
               </div>
             </div>
-          ) : (
+          )}
+
+          {/* Canva Minimum Import Size — the export is cropped to the artwork,
+              so a thin shape makes a page Canva refuses to import. */}
+          {sizeCheck.status === 'tooSmall' && (
+            <div className={`p-4 rounded border space-y-3 ${
+              isDark ? 'border-rose-500/30 bg-rose-950/20 text-rose-200' : 'border-rose-300 bg-rose-50 text-rose-900'
+            }`}>
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className={`font-semibold text-sm ${isDark ? 'text-rose-300' : 'text-rose-800'}`}>
+                    Import Will Fail: Frame Is Too Small for Canva
+                  </div>
+                  <p className={`text-xs leading-relaxed ${isDark ? 'text-rose-200/80' : 'text-rose-700'}`}>
+                    The export is cropped to the artwork, not to the canvas, so this
+                    file is a{' '}
+                    <span className="font-mono font-semibold">
+                      {sizeCheck.width} × {sizeCheck.height} px
+                    </span>{' '}
+                    page. Its shortest side is{' '}
+                    <span className="font-mono font-semibold">{sizeCheck.smallestSide} px</span>,
+                    under Canva’s {sizeCheck.minimum} px minimum — Canva will reject the
+                    upload with “The dimensions of this document are too small to import.”
+                  </p>
+                </div>
+              </div>
+
+              <div className={`text-xs leading-relaxed rounded px-3 py-2 border ${
+                isDark ? 'bg-rose-900/25 border-rose-800/50 text-rose-100' : 'bg-white border-rose-200 text-rose-800'
+              }`}>
+                <strong>Fix:</strong> scale the frame up about{' '}
+                <span className="font-mono">{sizeCheck.suggestedScale}×</span> — to roughly{' '}
+                <span className="font-mono">
+                  {sizeCheck.suggestedWidth} × {sizeCheck.suggestedHeight} px
+                </span>{' '}
+                — using the W/H fields in the Properties panel, then export again. If this
+                frame is one piece of a set, scale every piece by the same factor so they
+                still line up once they are back in Canva.
+              </div>
+
+              <div className={`pt-2 border-t flex items-center justify-between gap-3 ${
+                isDark ? 'border-rose-500/20' : 'border-rose-200'
+              }`}>
+                <span className={`text-xs ${isDark ? 'text-rose-200/90' : 'text-rose-800'}`}>
+                  Downloading is blocked because Canva is very unlikely to accept this file.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSizeOverride(true)}
+                  disabled={sizeOverride}
+                  className={`shrink-0 px-4 py-2 rounded text-xs font-semibold border transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default ${
+                    isDark ? 'bg-[#242424] hover:bg-[#2E2E2E] text-rose-200 border-rose-800/60' : 'bg-white hover:bg-rose-100 text-rose-800 border-rose-300'
+                  }`}
+                >
+                  {sizeOverride ? 'Export Unlocked' : 'Export Anyway'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {sizeCheck.status === 'tight' && (
+            <div className={`p-3.5 rounded border flex items-start gap-3 ${
+              isDark ? 'border-amber-500/30 bg-amber-950/20 text-amber-200' : 'border-amber-300 bg-amber-50 text-amber-900'
+            }`}>
+              <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              <div className="text-xs leading-relaxed">
+                <span className={`font-semibold ${isDark ? 'text-amber-300' : 'text-amber-800'}`}>
+                  Small Frame — Import Will Be Tight
+                </span>{' '}
+                — this exports as a{' '}
+                <span className="font-mono font-semibold">
+                  {sizeCheck.width} × {sizeCheck.height} px
+                </span>{' '}
+                page, only just clear of Canva’s {sizeCheck.minimum} px minimum. It should
+                import, but the frame arrives tiny and awkward to place. Scaling up to about{' '}
+                <span className="font-mono">
+                  {sizeCheck.suggestedWidth} × {sizeCheck.suggestedHeight} px
+                </span>{' '}
+                gives it room.
+              </div>
+            </div>
+          )}
+
+          {!overlayResult.hasOverlay &&
+            (sizeCheck.status === 'ok' || sizeCheck.status === 'empty') && (
             <div className={`p-3.5 rounded border flex items-center gap-3 ${
               isDark ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-200' : 'border-emerald-300 bg-emerald-50 text-emerald-900'
             }`}>
@@ -171,24 +274,42 @@ export const ExportModal: React.FC<Props> = ({
                 <span className={`font-semibold ${isDark ? 'text-emerald-300' : 'text-emerald-800'}`}>
                   Ready for Canva Export
                 </span>{' '}
-                — No uncombined overlays detected. Vector frame geometry is clean.
+                — No uncombined overlays detected, and the{' '}
+                <span className="font-mono">
+                  {sizeCheck.width} × {sizeCheck.height} px
+                </span>{' '}
+                page clears Canva’s {sizeCheck.minimum} px minimum. Vector frame geometry is clean.
               </div>
             </div>
           )}
 
           {/* Export Formats */}
           <div className="space-y-3">
-            <div className={`text-[11px] font-mono uppercase tracking-wider ${
+            <div className={`flex items-center justify-between gap-3 text-[11px] font-mono uppercase tracking-wider ${
               isDark ? 'text-neutral-400' : 'text-gray-500'
             }`}>
-              Select Export Format for Canva
+              <span>Select Export Format for Canva</span>
+              {/* The size that decides whether Canva accepts the upload, shown
+                  before the download rather than after the rejection. */}
+              <span
+                title="Exported page size — the artwork's bounding box, not the canvas"
+                className={
+                  sizeCheck.status === 'tooSmall'
+                    ? isDark ? 'text-rose-400 normal-case' : 'text-rose-600 normal-case'
+                    : sizeCheck.status === 'tight'
+                    ? isDark ? 'text-amber-400 normal-case' : 'text-amber-600 normal-case'
+                    : 'normal-case'
+                }
+              >
+                {sizeCheck.width} × {sizeCheck.height} px
+              </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {/* Option 1: Native Canva PDF Frame (Recommended) */}
               <div
                 className={`p-4 rounded border transition-all ${
-                  overlayResult.hasOverlay
+                  exportBlocked
                     ? isDark ? 'opacity-40 border-[#2A2A2A] bg-[#1E1E1E] pointer-events-none' : 'opacity-40 border-gray-200 bg-gray-50 pointer-events-none'
                     : isDark
                     ? 'border-[#F43F5E]/50 bg-[#F43F5E]/5 hover:border-[#F43F5E]'
@@ -215,7 +336,7 @@ export const ExportModal: React.FC<Props> = ({
                 </p>
                 <button
                   type="button"
-                  disabled={overlayResult.hasOverlay || isExportingPdf}
+                  disabled={exportBlocked || isExportingPdf}
                   onClick={handleDownloadPdf}
                   className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded bg-gradient-to-r from-[#F43F5E] to-[#FF5722] hover:opacity-90 disabled:opacity-40 text-white text-xs font-semibold shadow-sm transition-opacity cursor-pointer"
                 >
@@ -227,7 +348,7 @@ export const ExportModal: React.FC<Props> = ({
               {/* Option 2: Canva Frame SVG */}
               <div
                 className={`p-4 rounded border transition-all ${
-                  overlayResult.hasOverlay
+                  exportBlocked
                     ? isDark ? 'opacity-40 border-[#2A2A2A] bg-[#1E1E1E] pointer-events-none' : 'opacity-40 border-gray-200 bg-gray-50 pointer-events-none'
                     : isDark
                     ? 'border-[#2A2A2A] bg-[#242424]/40 hover:border-[#383838]'
@@ -254,7 +375,7 @@ export const ExportModal: React.FC<Props> = ({
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    disabled={overlayResult.hasOverlay}
+                    disabled={exportBlocked}
                     onClick={handleDownloadSvg}
                     className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded text-xs font-semibold border transition-colors cursor-pointer ${
                       isDark ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-200 border-[#2A2A2A]' : 'bg-white hover:bg-gray-100 text-gray-800 border-gray-300'
@@ -265,7 +386,7 @@ export const ExportModal: React.FC<Props> = ({
                   </button>
                   <button
                     type="button"
-                    disabled={overlayResult.hasOverlay}
+                    disabled={exportBlocked}
                     onClick={handleCopySvg}
                     className={`px-3 py-2.5 rounded text-xs font-semibold border transition-colors cursor-pointer ${
                       isDark ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-200 border-[#2A2A2A]' : 'bg-white hover:bg-gray-100 text-gray-800 border-gray-300'
