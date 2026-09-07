@@ -7,6 +7,7 @@ import {
   exportShapesToSvg,
   exportToCanvaPdf,
 } from '../utils/canvaExport';
+import { sanitizeProjectName } from '../utils/projectFile';
 import { useTheme } from '../context/ThemeContext';
 import {
   AlertTriangle,
@@ -26,6 +27,7 @@ interface Props {
   onClose: () => void;
   shapes: VectorShape[];
   dimensions: CanvasDimensions;
+  projectName: string;
   onFlattenFirst: () => void;
 }
 
@@ -34,6 +36,7 @@ export const ExportModal: React.FC<Props> = ({
   onClose,
   shapes,
   dimensions,
+  projectName,
   onFlattenFirst,
 }) => {
   const { isDark } = useTheme();
@@ -62,6 +65,10 @@ export const ExportModal: React.FC<Props> = ({
   const sizeBlocked = sizeCheck.status === 'tooSmall' && !sizeOverride;
   const exportBlocked = overlayResult.hasOverlay || sizeBlocked;
 
+  // The download is named after the project, so an export lands in the user's
+  // downloads folder under the same name they see in the toolbar.
+  const exportBaseName = sanitizeProjectName(projectName);
+
   if (!isOpen) return null;
 
   const handleDownloadPdf = async () => {
@@ -71,7 +78,7 @@ export const ExportModal: React.FC<Props> = ({
       const pdfBytes = await exportToCanvaPdf(shapes, dimensions);
       downloadFile(
         pdfBytes,
-        `canva_frame_${Date.now()}.pdf`,
+        `${exportBaseName}.pdf`,
         'application/pdf'
       );
     } catch (e) {
@@ -86,7 +93,7 @@ export const ExportModal: React.FC<Props> = ({
     const svgStr = exportShapesToSvg(shapes, dimensions, false);
     downloadFile(
       svgStr,
-      `canva_frame_${Date.now()}.svg`,
+      `${exportBaseName}.svg`,
       'image/svg+xml;charset=utf-8'
     );
   };

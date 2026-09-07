@@ -9,6 +9,13 @@ This project has no releases yet, so entries are grouped by date.
 
 ### 2026-09-06
 
+#### Changed
+
+- **Exports are named after the project.** The PDF and SVG downloads now use the
+  project name from the toolbar (`my frame.pdf`, `my frame.svg`) instead of
+  `canva_frame_<timestamp>`, run through the same `sanitizeProjectName` the save
+  file uses.
+
 #### Added
 
 - **Paste an image straight onto the canvas (Ctrl/⌘+V).** A screenshot, a copy
@@ -120,6 +127,15 @@ This project has no releases yet, so entries are grouped by date.
 
 #### Changed
 
+- **The `?` button in the top bar is now a how-to-use panel, not an SDK
+  explainer.** It leads with the walkthrough video embedded in place
+  (`youtube-nocookie`, lazily loaded, in a 16:9 box so it fits both themes and
+  any window), then the five things you actually do — bring in artwork, draw,
+  shape, read the status badge, save — with the real tool shortcuts, and closes
+  with the three steps that get the frame into Canva. The old panel's middle
+  section described a Canva Apps SDK integration this app does not have and told
+  you about `sdk.canva.com/designbutton`, which answers a question nobody
+  clicking `?` was asking; it is gone.
 - **Copy and paste moved off the keydown handler onto the real `copy`/`paste`
   events.** A keystroke cannot tell a copied layer from a copied screenshot —
   only the clipboard event can see what is actually on the clipboard — and the

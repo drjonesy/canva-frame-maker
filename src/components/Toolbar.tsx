@@ -463,7 +463,7 @@ export const Toolbar: React.FC<Props> = ({
         <button
           type="button"
           onClick={onOpenGuide}
-          title="Canva Frame Import Guide & SDK info"
+          title="How to use Canva Frame Maker — video walkthrough & instructions"
           className={`p-1.5 rounded transition-colors border ${
             isDark
               ? 'bg-[#242424] hover:bg-[#2E2E2E] text-neutral-300 hover:text-white border-[#2A2A2A]'

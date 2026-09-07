@@ -2080,6 +2080,7 @@ function CanvaFrameApp() {
         onClose={() => setIsExportModalOpen(false)}
         shapes={shapes}
         dimensions={dimensions}
+        projectName={projectName}
         onFlattenFirst={handleFlattenShapes}
       />
 
