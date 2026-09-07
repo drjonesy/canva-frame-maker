@@ -1,6 +1,7 @@
 import { GuideAxis, PathPoint, Point2D, VectorShape } from '../types';
 import { shapeCenter } from './rotate';
 import { generateShapeId } from './shapePresets';
+import { detachText } from './textToShape';
 
 /**
  * Reflect one coordinate across a line at `position`.
@@ -59,7 +60,9 @@ export function mirrorShape(
 ): VectorShape {
   const id = generateShapeId();
 
-  return {
+  // The copy is plain outlines: a reflection is not something a font size and a
+  // family can describe, so a mirrored text layer stops being editable text.
+  return detachText({
     ...shape,
     id,
     name: shape.name.endsWith(' Mirror') ? shape.name : `${shape.name} Mirror`,
@@ -67,7 +70,7 @@ export function mirrorShape(
     subPaths: shape.subPaths?.map((sub, i) =>
       mirrorPoints(sub, axis, position, `${id}_s${i}`)
     ),
-  };
+  });
 }
 
 /**
@@ -105,11 +108,13 @@ export function flipShape(
   const axis = FLIP_AXIS[direction];
   const position = axis === 'x' ? center.x : center.y;
 
-  return {
+  // As with a rotation, there is no way to say "reflected" in a text style, so
+  // a flipped text layer becomes the outlines it now is.
+  return detachText({
     ...shape,
     points: mirrorPoints(shape.points, axis, position),
     subPaths: shape.subPaths?.map((sub) => mirrorPoints(sub, axis, position)),
-  };
+  });
 }
 
 /**

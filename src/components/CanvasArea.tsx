@@ -24,6 +24,8 @@ import {
   shapeToSvgPath,
 } from '../utils/bezier';
 import { insertPointOnPath, projectOntoPath } from '../utils/addPoint';
+import { translateShape } from '../utils/alignment';
+import { fontStack } from '../utils/googleFonts';
 import { Rulers, RULER_SIZE } from './Rulers';
 
 interface Props {
@@ -63,6 +65,20 @@ interface Props {
    * bare click that changes nothing does not leave an empty undo step behind.
    */
   onBeginTransform: () => void;
+  /** The Text tool was clicked on empty canvas: start a text layer here. */
+  onPlaceText: (position: Point2D) => void;
+  /** The text layer being typed into, or null when nothing is being typed. */
+  editingTextId: string | null;
+  /** Enter or leave typing on a text layer. */
+  onEditText: (shapeId: string | null) => void;
+  /** A keystroke in the on-canvas editor. */
+  onTextContentChange: (content: string) => void;
+  /**
+   * The edited face's vertical metrics, as fractions of the em, so the caret
+   * in the invisible editor lands on the same baseline as the outlines under
+   * it. Null until the face has loaded, where a nominal pair is used instead.
+   */
+  editingTextMetrics: { ascentEm: number; descentEm: number } | null;
 }
 
 /**
@@ -147,9 +163,15 @@ export const CanvasArea: React.FC<Props> = ({
   onUpdateActivePoints,
   onFinishPath,
   onBeginTransform,
+  onPlaceText,
+  editingTextId,
+  onEditText,
+  onTextContentChange,
+  editingTextMetrics,
 }) => {
   const { isDark } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
+  const textEditorRef = useRef<HTMLTextAreaElement>(null);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -438,6 +460,14 @@ export const CanvasArea: React.FC<Props> = ({
 
     const canvasPos = clientToCanvas(e.clientX, e.clientY);
 
+    // Text: a click on empty canvas drops a new text layer where it landed
+    // and puts the caret in it. A click on an existing text layer is caught by
+    // that layer's own handler below, which opens it for typing instead.
+    if (currentTool === 'text') {
+      onPlaceText(canvasPos);
+      return;
+    }
+
     // Add Anchor: only ever splits a segment. A click nowhere near the outline
     // is left alone rather than clearing the selection, since losing the shape
     // you are editing is the one thing that would stop the tool working.
@@ -649,28 +679,12 @@ export const CanvasArea: React.FC<Props> = ({
         setSnapHit({ x: null, y: null });
       }
 
-      const updated = dragTarget.initialShapes.map((s) => {
-        if (!selectedShapeIds.includes(s.id)) return s;
-        return {
-          ...s,
-          points: s.points.map((p) => ({
-            ...p,
-            x: p.x + moveX,
-            y: p.y + moveY,
-            cp1: p.cp1 ? { x: p.cp1.x + moveX, y: p.cp1.y + moveY } : undefined,
-            cp2: p.cp2 ? { x: p.cp2.x + moveX, y: p.cp2.y + moveY } : undefined,
-          })),
-          subPaths: s.subPaths?.map((sub) =>
-            sub.map((p) => ({
-              ...p,
-              x: p.x + moveX,
-              y: p.y + moveY,
-              cp1: p.cp1 ? { x: p.cp1.x + moveX, y: p.cp1.y + moveY } : undefined,
-              cp2: p.cp2 ? { x: p.cp2.x + moveX, y: p.cp2.y + moveY } : undefined,
-            }))
-          ),
-        };
-      });
+      // `translateShape` rather than the offset written out here, so a text
+      // layer's typesetting origin moves with its outlines by the one route
+      // every other move already takes.
+      const updated = dragTarget.initialShapes.map((s) =>
+        selectedShapeIds.includes(s.id) ? translateShape(s, moveX, moveY) : s
+      );
       onUpdateShapes(updated);
       return;
     }
@@ -914,6 +928,53 @@ export const CanvasArea: React.FC<Props> = ({
           .filter(Boolean) as PathPoint[])
       : [];
 
+  /**
+   * Where the on-canvas editor sits, in canvas coordinates, and what it is set
+   * in.
+   *
+   * A text layer's `y` is the top of its first line's *ascent*, while a CSS
+   * line box starts half the leading above that ascent — so the box has to be
+   * lifted by that half-leading for the two baselines to coincide. The real
+   * metrics come from the loaded face; the fallback pair is only in use for the
+   * instant before it arrives, when there is nothing drawn to be out of step
+   * with anyway.
+   */
+  const textEditor = useMemo(() => {
+    const shape = editingTextId
+      ? shapes.find((s) => s.id === editingTextId)
+      : undefined;
+    if (!shape?.text) return null;
+
+    const style = shape.text;
+    const ascentEm = editingTextMetrics?.ascentEm ?? 1;
+    const descentEm = editingTextMetrics?.descentEm ?? 0.25;
+    const halfLeading =
+      ((style.lineHeight - (ascentEm + descentEm)) * style.fontSize) / 2;
+
+    const lines = style.content.split('\n');
+    const longest = lines.reduce((n, l) => Math.max(n, l.length), 1);
+
+    return {
+      style,
+      left: style.x,
+      top: style.y - halfLeading,
+      // Generous on both axes: the box only has to hold the caret, and one
+      // that ran out of room would scroll the text away from the outlines.
+      width: (longest + 4) * style.fontSize,
+      height: (lines.length + 1) * style.fontSize * style.lineHeight,
+    };
+  }, [editingTextId, shapes, editingTextMetrics]);
+
+  // Opening a layer for typing puts the caret at the end of what is there,
+  // which is where a click on a word almost always means to carry on from.
+  useEffect(() => {
+    if (!editingTextId) return;
+    const el = textEditorRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [editingTextId]);
+
   return (
     <div
       ref={containerRef}
@@ -938,6 +999,8 @@ export const CanvasArea: React.FC<Props> = ({
           ? addPointHover
             ? 'cursor-copy'
             : 'cursor-crosshair'
+          : currentTool === 'text'
+          ? 'cursor-text'
           : 'cursor-default'
       }`}
     >
@@ -1016,7 +1079,25 @@ export const CanvasArea: React.FC<Props> = ({
                     ? 'pointer-events-none'
                     : 'cursor-pointer hover:opacity-95'
                 }`}
+                // Double-click opens a text layer for typing whatever tool is
+                // up, the way every editor lets you get back into a word — no
+                // hunting for the Text tool first. A layer that is only
+                // outlines has nothing to type into, so it is left alone.
+                onDoubleClick={(e) => {
+                  if (!shape.text) return;
+                  e.stopPropagation();
+                  onEditText(shape.id);
+                }}
                 onMouseDown={(e) => {
+                  // Text: clicking a text layer edits *that* layer rather
+                  // than starting a second one on top of it.
+                  if (currentTool === 'text' && shape.text) {
+                    e.stopPropagation();
+                    onSelectShape(shape.id, false);
+                    onEditText(shape.id);
+                    return;
+                  }
+
                   // Add Anchor: the fill sits above the canvas handler, so a
                   // click on the shape has to be dealt with here. Picking the
                   // shape comes first — you cannot add a point to an outline
@@ -1654,6 +1735,55 @@ export const CanvasArea: React.FC<Props> = ({
             />
           )}
         </svg>
+
+        {/* The on-canvas text editor.
+
+            A real <textarea>, laid over the outlines it is typing, with its
+            own text left transparent so what is on screen stays the vector
+            geometry rather than a DOM copy of it that would drift from it.
+            Only the caret and the selection band show through.
+
+            It lives inside the artboard container, so its coordinates are
+            canvas coordinates and the container's own transform carries it
+            through pan and zoom — no second copy of that maths to keep in
+            step. `wrap="off"` because the outlines do not wrap either: a line
+            ends where a newline is typed and nowhere else. */}
+        {textEditor && (
+          <textarea
+            ref={textEditorRef}
+            value={textEditor.style.content}
+            wrap="off"
+            spellCheck={false}
+            onChange={(e) => onTextContentChange(e.target.value)}
+            onBlur={() => onEditText(null)}
+            onKeyDown={(e) => {
+              // Escape leaves the layer as typed; Enter is a newline, so it
+              // must not reach the pen's "finish path" handler.
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.currentTarget.blur();
+              }
+              e.stopPropagation();
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="absolute pointer-events-auto bg-transparent border-0 p-0 m-0 resize-none overflow-hidden focus:outline-none"
+            style={{
+              left: textEditor.left,
+              top: textEditor.top,
+              width: textEditor.width,
+              height: textEditor.height,
+              fontFamily: fontStack(textEditor.style.fontFamily),
+              fontSize: textEditor.style.fontSize,
+              fontWeight: textEditor.style.bold ? 700 : 400,
+              fontStyle: textEditor.style.italic ? 'italic' : 'normal',
+              letterSpacing: textEditor.style.letterSpacing,
+              lineHeight: textEditor.style.lineHeight,
+              color: 'transparent',
+              caretColor: '#F43F5E',
+              whiteSpace: 'pre',
+            }}
+          />
+        )}
       </div>
 
       {/* Rulers along the top and left edges, and the source of new guides */}
@@ -1701,6 +1831,16 @@ export const CanvasArea: React.FC<Props> = ({
                 : addPointHover
                 ? 'Add Anchor: Click to drop a point here'
                 : 'Add Anchor: Move onto the outline, then click'}
+            </span>
+          </>
+        )}
+        {currentTool === 'text' && (
+          <>
+            <span className={isDark ? 'text-[#444]' : 'text-gray-300'}>•</span>
+            <span className="text-[#F43F5E] font-medium">
+              {editingTextId
+                ? 'Text: Type away · Esc or a click off it finishes'
+                : 'Text: Click to place text, or click a text layer to retype it'}
             </span>
           </>
         )}

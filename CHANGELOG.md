@@ -11,6 +11,151 @@ This project has no releases yet, so entries are grouped by date.
 
 #### Added
 
+- **A Fonts tool (`T`) on the left rail, and a Fonts tab beside Layers.** Pick
+  the tool, click the canvas, and type: a text layer appears as real vector
+  outlines, and the tab on the right sets its family, size, weight, slant,
+  letter spacing, line spacing and the three rules — underline, overline and
+  strike-through. Any of the ~400 most popular Google Fonts, fetched live,
+  entirely client-side, with no API key and no backend
+  (`utils/googleFonts.ts`, `utils/textToShape.ts`, `TextPanel.tsx`).
+  - **A text layer is an ordinary `VectorShape`.** Its `points` are genuine
+    bezier anchors, so selection, the align grid, the boolean ops, rotation,
+    the layer-size check, the Canva export and the `.cf.json` file all handle
+    it with no special case at all. What makes it *editable* is a `text`
+    descriptor riding alongside, from which the outlines are rebuilt whenever a
+    setting changes. Drawing the type as `<text>` and only outlining it at
+    export time would have been less code and would have left every one of
+    those features with nothing to measure.
+  - **That makes the descriptor the source of truth and the anchors a view of
+    it**, so anything that changes the geometry by another route drops the
+    descriptor and the layer becomes the outlines it now is — the bargain
+    `cornerRadiusPct` already strikes with an off-axis rotation. Rotating,
+    flipping, mirroring and editing an anchor by hand all detach; keeping the
+    descriptor would mean the next nudge of the font size silently redrew the
+    word upright, unflipped and un-edited. A layer still carrying live type is
+    marked with a **T** in Layers, so which layers are which is visible before
+    you act on one.
+  - **Moving and uniform scaling are the exceptions, because they *are*
+    expressible in a text style.** A drag, a nudge or an align carries the
+    typesetting origin along with the outlines (`translateShape` now does this
+    for every caller, and the canvas drag was rewritten to go through it rather
+    than repeat the offset inline). A corner-handle resize restates the layer at
+    the new font size; a stretch that is not uniform detaches, since no font
+    size draws a word half as wide as it is tall.
+  - **Type is set one character at a time**, through `charToGlyph` plus the
+    font's own kerning, rather than through `opentype.getPath` on the whole
+    string. That is what leaves per-character geometry for Convert to Objects to
+    hand back — and it also steps around `opentype`'s shaping engine, which
+    throws outright on the GSUB tables of a fair number of Google's families
+    (Playfair Display among them).
+  - **Every glyph is put through a union, because glyph outlines are drawn for
+    the wrong fill rule.** Fonts define their shapes under *nonzero* winding;
+    this app and the Canva export both fill with `evenodd`. The two agree on a
+    counter nested inside its letter — which is why an "o" looks right either
+    way — but they disagree wherever outlines genuinely overlap, and outlines
+    overlap more often than one would guess. Inter's and Roboto's "e" is a
+    *single* contour that doubles back through itself rather than an outline
+    plus a separate counter, so under `evenodd` its counter fills in and a
+    sliver of white opens where the path crosses. An underline vanishes
+    everywhere a descender crosses it. A connecting script comes apart at every
+    join. Because the export fills the same way, none of that is a display
+    artefact — it is what Canva would import.
+
+    A union is exactly the operation that restates winding-defined geometry as
+    the outline-plus-holes form both rules agree on, so every cluster goes
+    through one — and the same pass welds clusters that genuinely touch. It runs
+    through the curve-preserving bridge the Merge tab uses, so a curve the
+    operation did not touch comes back as the very same bezier with the very
+    same anchors, and new anchors appear only where outlines actually cross.
+    Measured on a 25-character underlined line in a connecting script: 17.6 ms
+    at worst, 9.6 ms on average, per keystroke.
+  - Which contours are holes is decided by **containment, not winding
+    direction**: TrueType runs its outer contours clockwise and PostScript
+    anticlockwise, and this app has to take both. Containment gives the same
+    answer without caring, and always agrees with the `evenodd` fill on screen.
+
+- **Convert to Objects**, in the Fonts tab: one layer per character, ready to be
+  aligned, merged and exported as frame geometry.
+  - **Characters whose outlines touch come back as a single welded layer.** A
+    joined script is drawn to run into itself, and cutting it apart mid-stroke
+    would leave two shapes with a notch between them. An underline does the same
+    to a whole line, and for the same reason — so an underlined word converts to
+    one object, which is what it is.
+  - **A character's disjoint islands stay in one layer**, as an outline plus
+    sub-paths. A dotted "i" can never be one filled path, but it is still one
+    letter, and splitting it would mean moving an "i" took two drags.
+  - The pieces are dropped in at the text layer's own place in the stack rather
+    than jumping to the front, and they carry no descriptor: this is one-way,
+    and the panel says so.
+
+- **`scripts/build-font-catalog.mjs`**, which generates
+  `src/data/googleFonts.ts` — the family list, each family's available weights
+  and whether it has a real italic.
+  - The list is **baked in rather than fetched** because
+    `fonts.google.com/metadata/fonts` sends no `Access-Control-Allow-Origin` at
+    all (and `Cross-Origin-Resource-Policy: same-site`), so a browser cannot
+    read it. The two endpoints the app *does* hit live —
+    `fonts.googleapis.com/css2` for the stylesheet and `fonts.gstatic.com` for
+    the file — are both `*`-CORS, so only the list has to ship.
+  - Knowing the weights matters: **Bold and Italic are greyed out on a family
+    that has neither**, with a tooltip saying so, rather than being buttons that
+    quietly do nothing. Bold asks for 700 where it exists and otherwise the
+    heaviest weight above the regular one, so a display face topping out at 500
+    still has a usable bolder.
+  - Google serves **one file for every weight of a variable family** — asking
+    `css2` for 400 and for 700 hands back the same URL — and leaves the weight
+    to the renderer, so the `wght` axis is set explicitly on load. Without that,
+    bold Playfair Display came back drawn at 400.
+
+#### Changed
+
+- **The Fonts tool and the Fonts tab are now called Text** — the rail button
+  (`T`) and the tab beside Layers, plus every hint, tooltip and empty-state
+  that named them. The panel is about the words on the canvas, not only the
+  face they are set in, so "Text" says what it does; the family picker inside
+  it still searches Google Fonts by that name. Nothing else moved and the
+  shortcut is unchanged.
+
+- **Basic Shapes moved up the tool rail, above Fonts** — it now sits directly
+  under Add Anchor, with Fonts below it, rather than at the very bottom under
+  Mirror and Parallel. Its flyout, shortcut and behaviour are unchanged.
+  - Its icon **drops the orange** (`#FF5722`) and inherits `currentColor` like
+    every other rail button, so the rail reads as one set of tools rather than
+    one highlighted entry. The preset icons inside the flyout keep their rose.
+
+- **Layers now shares a tab strip with Fonts**, at the bottom of the right
+  column, instead of being a block of its own (`LayersSection.tsx`).
+  `TabbedSection` grew the same `actions` slot `CollapsibleSection` had, so the
+  layer-settings gear still sits in the header; `LayersPanel` is now the list
+  alone, with the size-warning preference lifted to the section that owns the
+  gear.
+- The empty Layers list mentions the Fonts tool alongside the preset shapes and
+  the Pen.
+
+#### Removed
+
+- **`CollapsibleSection.tsx`**, which the Layers block was the last user of.
+  Every block in the right column is now a `TabbedSection`.
+
+#### Dependencies
+
+- Added `opentype.js` ^2.0.0 (MIT) for glyph outlines and `woff2-encoder` ^2.0.0
+  (MIT) to decompress what Google actually serves.
+  - A modern browser sends a modern `User-Agent`, so `css2` always answers with
+    WOFF2 — which is Brotli, which `opentype.js` cannot read and
+    `DecompressionStream` does not implement. `woff2-encoder/decompress` is
+    Google's own `woff2` library built to WASM, in a decompress-only bundle, and
+    is `import()`ed on the first font: a session that never sets any type never
+    downloads its 295 kB.
+  - **Not `wawoff2`**, which `opentype.js`'s own README points at. Its
+    Emscripten glue assigns `module.exports` *only* inside its
+    `ENVIRONMENT_IS_NODE` branch, so bundled for a browser it resolves to an
+    empty object and its decompress promise simply never settles — no error, no
+    rejection, just a text layer that never appears.
+  - `opentype.js` ships no types and `@types/opentype.js` tracks the 1.3 line,
+    which knows nothing of the 2.0 `variation` manager this leans on hardest.
+    `src/types/fonts.d.ts` declares the surface actually used instead.
+
 - **Width and height dimension lines on the selection box.** Under Select, the
   bounding box now carries its measurements in canvas px: a rule below the
   bottom edge for the width and one right of the right edge for the height, each

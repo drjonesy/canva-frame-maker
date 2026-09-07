@@ -2,6 +2,38 @@ import { PathPoint, VectorShape } from '../types';
 import { getShapeBounds } from './bezier';
 import { Bounds, ResizeResult } from './resize';
 import { buildRectPoints, cornerRadiusPx } from './shapePresets';
+import { detachText, scaleTextStyle } from './textToShape';
+
+/** How far the two axes may differ and still count as one scale factor. */
+const UNIFORM_EPSILON = 1e-4;
+
+/**
+ * Carry a text layer's style through a scale, or give up on it.
+ *
+ * A uniform scale *is* a font size: doubling the box is the same word set twice
+ * as large, so the layer keeps its descriptor and stays editable. A stretch is
+ * not — no font size draws a word half as wide as it is tall — so there the
+ * descriptor is dropped and the layer becomes the outlines it has been pulled
+ * into, the same bargain `cornerRadiusPct` strikes with an off-axis rotation.
+ */
+function scaleText(
+  shape: VectorShape,
+  from: Bounds,
+  to: ResizeResult
+): VectorShape {
+  if (!shape.text) return shape;
+  if (to.scaleX <= 0 || Math.abs(to.scaleX - to.scaleY) > UNIFORM_EPSILON) {
+    return detachText(shape);
+  }
+
+  return {
+    ...shape,
+    text: scaleTextStyle(shape.text, to.scaleX, {
+      x: mapX(shape.text.x, from, to),
+      y: mapY(shape.text.y, from, to),
+    }),
+  };
+}
 
 /** Map one coordinate from the old box into the new one. */
 function mapX(x: number, from: Bounds, to: ResizeResult): number {
@@ -77,10 +109,14 @@ export function scaleShapes(
       };
     }
 
-    return {
-      ...s,
-      points: scalePathPoints(s.points, from, to),
-      subPaths: s.subPaths?.map((sub) => scalePathPoints(sub, from, to)),
-    };
+    return scaleText(
+      {
+        ...s,
+        points: scalePathPoints(s.points, from, to),
+        subPaths: s.subPaths?.map((sub) => scalePathPoints(sub, from, to)),
+      },
+      from,
+      to
+    );
   });
 }

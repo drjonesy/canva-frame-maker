@@ -38,5 +38,10 @@ export function duplicateShape(
     subPaths: shape.subPaths?.map((sub, i) =>
       offsetPoints(sub, `${id}_s${i}`, dx, dy)
     ),
+    // A copied text layer is still editable text, so its typesetting origin
+    // moves with its outlines rather than staying at the original's.
+    text: shape.text
+      ? { ...shape.text, x: shape.text.x + dx, y: shape.text.y + dy }
+      : undefined,
   };
 }

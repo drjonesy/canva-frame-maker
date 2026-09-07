@@ -204,6 +204,11 @@ export function translateShape(
     ...shape,
     points: translatePoints(shape.points),
     subPaths: shape.subPaths ? shape.subPaths.map(translatePoints) : undefined,
+    // A text layer's typesetting origin has to travel with its outlines, or the
+    // next font change would redraw the word back where it started.
+    text: shape.text
+      ? { ...shape.text, x: shape.text.x + dx, y: shape.text.y + dy }
+      : undefined,
   };
 }
 

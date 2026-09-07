@@ -1,6 +1,7 @@
 import { PathPoint, Point2D, VectorShape } from '../types';
 import { getShapeBounds } from './bezier';
 import { unionBounds } from './guides';
+import { detachText } from './textToShape';
 
 /** Holding Shift while dragging the rotate handle locks to this increment. */
 export const ROTATE_SNAP_DEG = 15;
@@ -135,7 +136,11 @@ export function rotateShape(
     delete rotated.cornerRadiusPct;
   }
 
-  return rotated;
+  // A text layer's outlines are rebuilt from its style, and that style has no
+  // angle to record a turn in — even a quarter one. Keeping the descriptor
+  // would mean the next change of font size redrew the word upright. So a
+  // rotated text layer becomes the plain outlines it now is.
+  return detachText(rotated);
 }
 
 /**

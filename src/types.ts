@@ -16,6 +16,37 @@ export interface PathPoint {
   type: PointType;
 }
 
+/**
+ * What a text layer is set in, and what it says.
+ *
+ * A text layer's `points` are ordinary outlines — everything downstream treats
+ * it as any other shape — but they are *derived* from this, rebuilt whenever a
+ * setting here changes. That makes the descriptor the source of truth and the
+ * anchors a view of it, so anything that edits those anchors by another route
+ * has to drop the descriptor first (`detachText` in `utils/textToShape.ts`).
+ */
+export interface TextStyle {
+  /** What is typed. `\n` starts a new line. */
+  content: string;
+  /** A Google Fonts family name, as it appears in `data/googleFonts.ts`. */
+  fontFamily: string;
+  /** Em size in canvas px. */
+  fontSize: number;
+  bold: boolean;
+  italic: boolean;
+  /** Extra space *between* characters, in canvas px. Negative tightens. */
+  letterSpacing: number;
+  /** Baseline-to-baseline distance as a multiple of `fontSize`. */
+  lineHeight: number;
+  underline: boolean;
+  overline: boolean;
+  lineThrough: boolean;
+  /** Left edge of the first character, in canvas coordinates. */
+  x: number;
+  /** Top of the first line's ascent, in canvas coordinates. */
+  y: number;
+}
+
 export interface VectorShape {
   id: string;
   name: string;
@@ -32,6 +63,9 @@ export interface VectorShape {
   // Present on rectangles: corner radius as 0-100% of half the shorter side,
   // so the corners stay put when one axis is stretched
   cornerRadiusPct?: number;
+  // Present on text layers: the settings the outlines above were built from,
+  // which is what keeps a typed word re-editable rather than frozen geometry
+  text?: TextStyle;
   // Transformed origin or bounds
   isFrameCandidate?: boolean;
 }
@@ -47,6 +81,7 @@ export type ToolMode =
   | 'directSelect' // Point & handle manipulation (sub-selection)
   | 'pen'          // Pen tool drawing
   | 'addPoint'     // Drop anchors onto an existing outline
+  | 'text'         // Place and type an editable text layer
   | 'pan';         // Canvas pan
 
 export type ShapePresetType = 

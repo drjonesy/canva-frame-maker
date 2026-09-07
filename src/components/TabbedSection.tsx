@@ -8,6 +8,13 @@ export interface SectionTab {
   icon?: React.ReactNode;
   /** Small note shown above the body while this tab is the active one. */
   badge?: React.ReactNode;
+  /**
+   * Controls sitting in the header row while this tab is active — a settings
+   * gear and the like. Rendered outside the tab strip, so clicking one neither
+   * switches tab nor collapses the block, and anchored to the header row, so a
+   * popup in here can hang below it with `absolute top-full`.
+   */
+  actions?: React.ReactNode;
   content: React.ReactNode;
 }
 
@@ -39,7 +46,10 @@ export const TabbedSection: React.FC<Props> = ({
 
   return (
     <div className={`border-b ${isDark ? 'border-[#2A2A2A]' : 'border-gray-200'}`}>
-      <div className="flex items-center gap-1.5 px-3 py-2.5">
+      {/* `relative` so an actions popup can anchor to the header row rather
+          than to the button that opened it: the right column clips
+          horizontally, and a popup hung off the gear would be cut off. */}
+      <div className="relative flex items-center gap-1.5 px-3 py-2.5">
         <div
           role="tablist"
           className={`flex-1 flex items-center gap-0.5 p-0.5 rounded-lg border ${
@@ -74,6 +84,8 @@ export const TabbedSection: React.FC<Props> = ({
             );
           })}
         </div>
+
+        {active.actions}
 
         <button
           type="button"

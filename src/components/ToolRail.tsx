@@ -16,6 +16,7 @@ import {
   Cloud,
   MessageSquare,
   Sliders,
+  Type,
 } from 'lucide-react';
 
 interface Props {
@@ -269,33 +270,6 @@ export const ToolRail: React.FC<Props> = ({
         <AddPointIcon className="w-4 h-4" />
       </RailButton>
 
-      <div className={`w-6 my-1 border-t ${isDark ? 'border-[#2A2A2A]' : 'border-gray-200'}`} />
-
-      {/* Mirror is an action, not a mode: it reflects the selection across the
-          picked guide there and then, so it sits below the divider with the
-          preset shapes rather than with the three tools above it. */}
-      <RailButton
-        label="Mirror"
-        shortcut="M"
-        description={mirrorHint}
-        disabled={!canMirror}
-        onClick={onMirror}
-      >
-        <MirrorIcon className="w-4 h-4" />
-      </RailButton>
-
-      {/* Parallel, likewise an action: it turns the selection where it stands
-          until the picked edge runs along the picked guide. */}
-      <RailButton
-        label="Parallel to Guide"
-        shortcut="P"
-        description={parallelHint}
-        disabled={!canParallel}
-        onClick={onParallel}
-      >
-        <ParallelIcon className="w-4 h-4" />
-      </RailButton>
-
       {/* Basic shapes, as a flyout so the rail stays one icon wide. */}
       <div className="relative">
         <RailButton
@@ -304,7 +278,7 @@ export const ToolRail: React.FC<Props> = ({
           expanded={shapesOpen}
           onClick={() => setShapesOpen((v) => !v)}
         >
-          <Shapes className="w-4 h-4 text-[#FF5722]" />
+          <Shapes className="w-4 h-4" />
         </RailButton>
 
         {shapesOpen && (
@@ -340,6 +314,46 @@ export const ToolRail: React.FC<Props> = ({
           </div>
         )}
       </div>
+
+      {/* Text: a mode like the four tools at the top of the rail, not an
+          action — you pick it, then click the canvas to place some type and
+          start typing. */}
+      <RailButton
+        label="Text"
+        shortcut="T"
+        description="Click the canvas and type. Set the family and size in the Text tab."
+        active={currentTool === 'text'}
+        onClick={() => onSelectTool('text')}
+      >
+        <Type className="w-4 h-4" />
+      </RailButton>
+
+      <div className={`w-6 my-1 border-t ${isDark ? 'border-[#2A2A2A]' : 'border-gray-200'}`} />
+
+      {/* Mirror is an action, not a mode: it reflects the selection across the
+          picked guide there and then, so it sits below the divider with the
+          preset shapes rather than with the three tools above it. */}
+      <RailButton
+        label="Mirror"
+        shortcut="M"
+        description={mirrorHint}
+        disabled={!canMirror}
+        onClick={onMirror}
+      >
+        <MirrorIcon className="w-4 h-4" />
+      </RailButton>
+
+      {/* Parallel, likewise an action: it turns the selection where it stands
+          until the picked edge runs along the picked guide. */}
+      <RailButton
+        label="Parallel to Guide"
+        shortcut="P"
+        description={parallelHint}
+        disabled={!canParallel}
+        onClick={onParallel}
+      >
+        <ParallelIcon className="w-4 h-4" />
+      </RailButton>
     </div>
   );
 };

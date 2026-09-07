@@ -5,6 +5,7 @@ import {
   PathPoint,
   Point2D,
   PointType,
+  TextStyle,
   VectorShape,
 } from '../types';
 
@@ -231,8 +232,44 @@ function parseShape(
   if (typeof v.isFrameCandidate === 'boolean') {
     shape.isFrameCandidate = v.isFrameCandidate;
   }
+  const text = parseTextStyle(v.text);
+  if (text) shape.text = text;
 
   return shape;
+}
+
+/**
+ * Read a text layer's descriptor back.
+ *
+ * Returns undefined for anything that is not a usable descriptor, which leaves
+ * the layer as plain outlines — the geometry is in the file in full, so a
+ * mangled `text` block costs the ability to retype the word, not the word.
+ *
+ * The font family is *not* checked against the catalogue here. A project may
+ * legitimately have been saved when the catalogue held a family this build's
+ * does not, and the outlines are already on disk; the panel reports an unknown
+ * family when it comes to reset it rather than dropping it on the way in.
+ */
+function parseTextStyle(v: unknown): TextStyle | undefined {
+  if (!isObject(v)) return undefined;
+  if (typeof v.content !== 'string') return undefined;
+  if (typeof v.fontFamily !== 'string' || !v.fontFamily) return undefined;
+  if (!finite(v.x) || !finite(v.y)) return undefined;
+
+  return {
+    content: v.content,
+    fontFamily: v.fontFamily,
+    fontSize: Math.min(2000, Math.max(1, num(v.fontSize, 160))),
+    bold: bool(v.bold, false),
+    italic: bool(v.italic, false),
+    letterSpacing: num(v.letterSpacing, 0),
+    lineHeight: Math.min(10, Math.max(0.1, num(v.lineHeight, 1.2))),
+    underline: bool(v.underline, false),
+    overline: bool(v.overline, false),
+    lineThrough: bool(v.lineThrough, false),
+    x: v.x,
+    y: v.y,
+  };
 }
 
 function parseGuide(v: unknown, index: number): Guide | null {

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Font } from 'opentype.js';
 import {
   BooleanOperation,
   CanvasDimensions,
@@ -6,8 +7,10 @@ import {
   GuideAlignType,
   GuideAxis,
   PathPoint,
+  Point2D,
   PointAlignType,
   ShapePresetType,
+  TextStyle,
   ToolMode,
   VectorShape,
 } from './types';
@@ -64,6 +67,19 @@ import {
 } from './utils/projectFile';
 import { buildRectPoints, cornerRadiusPx, createPresetShape } from './utils/shapePresets';
 import { parseSvgToVectorShapes, svgToRasterSource } from './utils/vectorTrace';
+import {
+  ensureFontOutlines,
+  ensurePreviewFaces,
+  peekFontOutlines,
+  resolveFace,
+} from './utils/googleFonts';
+import {
+  applyTextStyle,
+  createTextShape,
+  DEFAULT_TEXT_STYLE,
+  detachText,
+  splitTextIntoShapes,
+} from './utils/textToShape';
 
 import { AlignCenter, Combine, Move, Palette, RotateCw, Ruler } from 'lucide-react';
 
@@ -74,7 +90,7 @@ import { DropZoneOverlay } from './components/DropZoneOverlay';
 import { ExportModal } from './components/ExportModal';
 import { GuidesPanel } from './components/GuidesPanel';
 import { ImageTraceModal } from './components/ImageTraceModal';
-import { LayersPanel } from './components/LayersPanel';
+import { LayersSection } from './components/LayersSection';
 import { MergeTab } from './components/MergeTab';
 import { NewProjectModal } from './components/NewProjectModal';
 import { NudgePanel } from './components/NudgePanel';
@@ -83,6 +99,7 @@ import { PropertiesPanel } from './components/PropertiesPanel';
 import { RotatePanel } from './components/RotatePanel';
 import { SaveProjectModal } from './components/SaveProjectModal';
 import { TabbedSection } from './components/TabbedSection';
+import { TextPanel } from './components/TextPanel';
 import { ToolRail } from './components/ToolRail';
 import { Toolbar } from './components/Toolbar';
 import { ThemeProvider } from './context/ThemeContext';
@@ -312,6 +329,214 @@ function CanvaFrameApp() {
       dimensions,
     ]
   );
+
+  /* ---------------------------------------------------------------- */
+  /* Text layers                                                        */
+  /* ---------------------------------------------------------------- */
+  //
+  // A text layer is an ordinary shape whose outlines are *derived* from a
+  // `text` descriptor, so everything downstream — selection, align, export,
+  // the size check, the project file — handles it with no special case, and
+  // only this block has to know that fonts exist. It is async because a face
+  // has to come down from Google before there are any outlines to draw, which
+  // is why nothing here can be a plain `setShapes`.
+
+  /** The layer being typed into on the canvas. */
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [fontLoading, setFontLoading] = useState(false);
+  const [fontError, setFontError] = useState<string | null>(null);
+
+  // A run of keystrokes collapses into one undo step, the same 700ms rule the
+  // arrow keys already follow — typing a word should cost one Ctrl+Z, not one
+  // per letter.
+  const lastTextEditAt = useRef(0);
+
+  // What the next text layer inherits: the settings of the one most recently
+  // selected, minus its position. Setting a second heading should not mean
+  // picking the family and size again.
+  const lastTextStyle = useRef<Omit<TextStyle, 'x' | 'y'> | null>(null);
+
+  /**
+   * The single selected text layer, if that is what the selection is.
+   *
+   * Deliberately only one: the panel shows a family and a size, and with two
+   * layers picked there would be no honest answer to put in those fields.
+   */
+  const activeTextShape = useMemo(() => {
+    if (selectedShapeIds.length !== 1) return null;
+    const shape = shapes.find((s) => s.id === selectedShapeIds[0]);
+    return shape?.text ? shape : null;
+  }, [shapes, selectedShapeIds]);
+
+  useEffect(() => {
+    if (!activeTextShape?.text) return;
+    const { x: _x, y: _y, ...rest } = activeTextShape.text;
+    lastTextStyle.current = rest;
+    // The on-canvas editor is a real DOM textarea, so the browser needs the
+    // webfont as well as the outlines — otherwise its caret walks along a
+    // fallback face's advances and drifts away from the letters on screen.
+    ensurePreviewFaces([activeTextShape.text.fontFamily]);
+  }, [activeTextShape]);
+
+  /** The face currently in play, for the panel and the canvas editor. */
+  const activeTextFace = useMemo(() => {
+    const style = activeTextShape?.text;
+    return style ? resolveFace(style.fontFamily, style.bold, style.italic) : null;
+  }, [activeTextShape]);
+
+  const editingTextMetrics = useMemo(() => {
+    if (!activeTextFace) return null;
+    const font = peekFontOutlines(activeTextFace);
+    if (!font) return null;
+    return {
+      ascentEm: font.ascender / font.unitsPerEm,
+      descentEm: Math.abs(font.descender) / font.unitsPerEm,
+    };
+    // `fontLoading` is in the list on purpose: the cache is a plain Map, so a
+    // face arriving is not a state change React would otherwise notice.
+  }, [activeTextFace, fontLoading]);
+
+  // A layer that has been deleted, or has had its text detached by a rotation,
+  // has nothing left to type into.
+  useEffect(() => {
+    if (editingTextId && !shapes.some((s) => s.id === editingTextId && s.text)) {
+      setEditingTextId(null);
+    }
+  }, [shapes, editingTextId]);
+
+  /**
+   * Run `use` with the outlines for a style, fetching them if they are not in
+   * hand and reporting a failure to the panel rather than throwing.
+   *
+   * The cache makes the common cases — typing, nudging the size — synchronous,
+   * so the outlines keep up with the keyboard. Only a change of family, weight
+   * or slant goes to the network, and only the first time for each.
+   */
+  const withFont = useCallback(
+    async (style: TextStyle, use: (font: Font) => void) => {
+      const key = resolveFace(style.fontFamily, style.bold, style.italic);
+      const cached = peekFontOutlines(key);
+      if (cached) {
+        use(cached);
+        return;
+      }
+
+      setFontLoading(true);
+      try {
+        const font = await ensureFontOutlines(key);
+        setFontError(null);
+        use(font);
+      } catch (err: any) {
+        setFontError(
+          `Could not load ${style.fontFamily}: ${err?.message || err}`
+        );
+      } finally {
+        setFontLoading(false);
+      }
+    },
+    []
+  );
+
+  /**
+   * Change one setting on the selected text layer.
+   *
+   * Every change is its own undo step except a run of typing, which collapses
+   * into one.
+   */
+  const handleTextStyleChange = useCallback(
+    (patch: Partial<TextStyle>) => {
+      const current = activeTextShape?.text;
+      if (!activeTextShape || !current) return;
+
+      const isTyping = Object.keys(patch).length === 1 && 'content' in patch;
+      const now = Date.now();
+      if (!isTyping || now - lastTextEditAt.current > NUDGE_HISTORY_GAP_MS) {
+        recordHistory(shapes, dimensions);
+      }
+      if (isTyping) lastTextEditAt.current = now;
+
+      const next: TextStyle = { ...current, ...patch };
+      void withFont(next, (font) =>
+        setShapes((prev) =>
+          prev.map((s) =>
+            s.id === activeTextShape.id ? applyTextStyle(s, next, font) : s
+          )
+        )
+      );
+    },
+    [activeTextShape, shapes, dimensions, recordHistory, withFont]
+  );
+
+  /**
+   * Start a text layer at `position` and put the caret in it.
+   *
+   * `position` is the top-left of the first line, which is where a click reads
+   * as "put it here".
+   */
+  const handlePlaceText = useCallback(
+    (position: Point2D) => {
+      const seed: TextStyle = {
+        ...DEFAULT_TEXT_STYLE,
+        ...(lastTextStyle.current ?? {}),
+        x: position.x,
+        y: position.y,
+      };
+
+      void withFont(seed, (font) => {
+        recordHistory(shapes, dimensions);
+        const shape = createTextShape(seed, font);
+        setShapes((prev) => [...prev, shape]);
+        setSelectedShapeIds([shape.id]);
+        setSelectedPointIds([]);
+        setSelectedGuideIds([]);
+        setLastPicked('shape');
+        setEditingTextId(shape.id);
+        // A fresh layer starts its own undo run, so the first keystroke is not
+        // folded into whatever was typed into the previous one.
+        lastTextEditAt.current = 0;
+      });
+    },
+    [shapes, dimensions, recordHistory, withFont]
+  );
+
+  /** Drop a text layer on the canvas without going to the tool first. */
+  const handleAddTextAtCenter = useCallback(() => {
+    const size = lastTextStyle.current?.fontSize ?? DEFAULT_TEXT_STYLE.fontSize;
+    handlePlaceText({
+      x: dimensions.width * 0.12,
+      y: dimensions.height / 2 - size / 2,
+    });
+  }, [dimensions, handlePlaceText]);
+
+  /**
+   * Break the selected text layer into one layer per character.
+   *
+   * One-way, and that is the point: it is the step that turns a typed word
+   * into frame geometry. Characters whose outlines touch come back welded into
+   * a single layer, since an overlap under an `evenodd` fill exports as a
+   * notch rather than a join.
+   */
+  const handleConvertTextToObjects = useCallback(() => {
+    const style = activeTextShape?.text;
+    if (!activeTextShape || !style) return;
+
+    void withFont(style, (font) => {
+      const pieces = splitTextIntoShapes(activeTextShape, font);
+      if (pieces.length === 0) return;
+
+      recordHistory(shapes, dimensions);
+      setEditingTextId(null);
+      setShapes((prev) => {
+        const at = prev.findIndex((s) => s.id === activeTextShape.id);
+        if (at === -1) return prev;
+        // Dropped in where the text layer stood, so the pieces keep its place
+        // in the stack rather than jumping to the front.
+        return [...prev.slice(0, at), ...pieces, ...prev.slice(at + 1)];
+      });
+      setSelectedShapeIds(pieces.map((s) => s.id));
+      setSelectedPointIds([]);
+    });
+  }, [activeTextShape, shapes, dimensions, recordHistory, withFont]);
 
   // --- Rotation ---
   // Shapes carry no rotation field — geometry is a bezier point list — so a
@@ -623,7 +848,7 @@ function CanvaFrameApp() {
     setSelectedGuideIds([]);
   }, [shapes]);
 
-  // Keyboard shortcuts (Ctrl+S, Ctrl+O, Ctrl+A, Ctrl+Z, Ctrl+Y, Q, W, E, A, L, M, P,
+  // Keyboard shortcuts (Ctrl+S, Ctrl+O, Ctrl+A, Ctrl+Z, Ctrl+Y, Q, W, E, A, T, L, M, P,
   // Shift+H/V, Shift+(/), arrows, Delete). "S" opens the shapes flyout and is
   // handled in ToolRail, which owns that state — leave it unbound here.
   useEffect(() => {
@@ -686,6 +911,8 @@ function CanvaFrameApp() {
         selectTool('pen');
       } else if (e.key.toLowerCase() === 'a') {
         selectTool('addPoint');
+      } else if (e.key.toLowerCase() === 't') {
+        selectTool('text');
       } else if (e.key.toLowerCase() === 'r') {
         setShowRulers((v) => !v);
       } else if (e.key.toLowerCase() === 'g') {
@@ -942,6 +1169,25 @@ function CanvaFrameApp() {
     setCurrentTool('select');
   };
 
+  /**
+   * Apply a direct anchor edit — the pen, Sub-Select, Add Anchor, the point
+   * inspector — to one layer.
+   *
+   * The text descriptor is dropped on the way through. A hand-moved anchor is
+   * not something a family and a font size can describe, so keeping it would
+   * mean the next nudge of the size silently redrew the word and threw the
+   * edit away. The layer stays exactly as edited; it just stops being type.
+   */
+  const withEditedPoints = useCallback(
+    (shape: VectorShape, points: PathPoint[], closed?: boolean): VectorShape =>
+      detachText({
+        ...shape,
+        points,
+        ...(closed !== undefined ? { closed } : {}),
+      }),
+    []
+  );
+
   // --- Point & Handle Operations ---
   const handleUpdatePointType = (type: 'straight' | 'rounded' | 'break') => {
     if (!activeShape || selectedPointIds.length !== 1) return;
@@ -960,7 +1206,9 @@ function CanvaFrameApp() {
 
     const updatedPoints = activeShape.points.map((p) => (p.id === ptId ? updatedPt : p));
     setShapes((prev) =>
-      prev.map((s) => (s.id === activeShape.id ? { ...s, points: updatedPoints } : s))
+      prev.map((s) =>
+        s.id === activeShape.id ? withEditedPoints(s, updatedPoints) : s
+      )
     );
   };
 
@@ -974,7 +1222,9 @@ function CanvaFrameApp() {
     );
 
     setShapes((prev) =>
-      prev.map((s) => (s.id === activeShape.id ? { ...s, points: updatedPoints } : s))
+      prev.map((s) =>
+        s.id === activeShape.id ? withEditedPoints(s, updatedPoints) : s
+      )
     );
   };
 
@@ -984,7 +1234,9 @@ function CanvaFrameApp() {
 
     const updatedPoints = alignPoints(activeShape.points, selectedPointIds, alignType);
     setShapes((prev) =>
-      prev.map((s) => (s.id === activeShape.id ? { ...s, points: updatedPoints } : s))
+      prev.map((s) =>
+        s.id === activeShape.id ? withEditedPoints(s, updatedPoints) : s
+      )
     );
   };
 
@@ -1000,7 +1252,9 @@ function CanvaFrameApp() {
       setSelectedPointIds([]);
     } else {
       setShapes((prev) =>
-        prev.map((s) => (s.id === activeShape.id ? { ...s, points: remaining } : s))
+        prev.map((s) =>
+          s.id === activeShape.id ? withEditedPoints(s, remaining) : s
+        )
       );
       setSelectedPointIds([]);
     }
@@ -1040,9 +1294,9 @@ function CanvaFrameApp() {
     setShapes((prev) =>
       prev.map((s) => {
         if (s.id !== activeShape.id) return s;
-        return {
-          ...s,
-          points: s.points.map((p) => {
+        return withEditedPoints(
+          s,
+          s.points.map((p) => {
             if (p.id !== ptId) return p;
             const dx = x - p.x;
             const dy = y - p.y;
@@ -1053,8 +1307,8 @@ function CanvaFrameApp() {
               cp1: p.cp1 ? { x: p.cp1.x + dx, y: p.cp1.y + dy } : undefined,
               cp2: p.cp2 ? { x: p.cp2.x + dx, y: p.cp2.y + dy } : undefined,
             };
-          }),
-        };
+          })
+        );
       })
     );
   };
@@ -1437,11 +1691,11 @@ function CanvaFrameApp() {
               setShapes((prev) =>
                 prev.map((s) =>
                   s.id === activeShape.id
-                    ? {
-                        ...s,
-                        points: updatedPoints,
-                        closed: isClosed !== undefined ? isClosed : s.closed,
-                      }
+                    ? withEditedPoints(
+                        s,
+                        updatedPoints,
+                        isClosed !== undefined ? isClosed : s.closed
+                      )
                     : s
                 )
               );
@@ -1453,6 +1707,11 @@ function CanvaFrameApp() {
             // push one undo step each, on the first movement rather than on
             // mouse down so a bare click leaves no empty entry.
             onBeginTransform={() => recordHistory(shapes, dimensions)}
+            onPlaceText={handlePlaceText}
+            editingTextId={editingTextId}
+            onEditText={setEditingTextId}
+            onTextContentChange={(content) => handleTextStyleChange({ content })}
+            editingTextMetrics={editingTextMetrics}
           />
 
           {/* Floating Pen & Sub-Select Inspector (Bottom-Center) */}
@@ -1623,8 +1882,27 @@ function CanvaFrameApp() {
             ]}
           />
 
-          <LayersPanel
+          <LayersSection
             shapes={shapes}
+            fontsBadge={
+              activeTextShape?.text ? (
+                <span className="text-[10px] font-mono text-gray-400 dark:text-neutral-500 truncate max-w-[140px]">
+                  {activeTextShape.text.fontFamily}{' '}
+                  {Math.round(activeTextShape.text.fontSize)}
+                </span>
+              ) : undefined
+            }
+            fontsTab={
+              <TextPanel
+                shape={activeTextShape}
+                selectedCount={selectedShapeIds.length}
+                loading={fontLoading}
+                error={fontError}
+                onChange={handleTextStyleChange}
+                onConvertToObjects={handleConvertTextToObjects}
+                onAddText={handleAddTextAtCenter}
+              />
+            }
             selectedShapeIds={selectedShapeIds}
             onSelectShape={(id, multi) => {
               setLastPicked('shape');
