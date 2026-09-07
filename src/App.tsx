@@ -850,7 +850,9 @@ function CanvaFrameApp() {
 
   // Keyboard shortcuts (Ctrl+S, Ctrl+O, Ctrl+A, Ctrl+Z, Ctrl+Y, Q, W, E, A, T, L, M, P,
   // Shift+H/V, Shift+(/), arrows, Delete). "S" opens the shapes flyout and is
-  // handled in ToolRail, which owns that state — leave it unbound here.
+  // handled in ToolRail, which owns that state — leave it unbound here. Copy and
+  // paste are not here either: they are bound to the clipboard events further
+  // down, which alone can tell a copied layer from a copied screenshot.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -880,11 +882,6 @@ function CanvaFrameApp() {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '0') {
         e.preventDefault();
         setFitSignal((n) => n + 1);
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
-        // Only swallow the browser's own copy when there was something to take.
-        if (handleCopy()) e.preventDefault();
-      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
-        if (handlePaste()) e.preventDefault();
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         // Takes over the browser's "save page", which is never what is wanted
         // in an editor. There is no silent re-save: the app cannot write back
@@ -953,8 +950,6 @@ function CanvaFrameApp() {
   }, [
     handleUndo,
     handleRedo,
-    handleCopy,
-    handlePaste,
     selectTool,
     handleNudge,
     handleMirror,
@@ -1017,6 +1012,72 @@ function CanvaFrameApp() {
     setDimensions(newDims);
   };
 
+  // --- Import ---
+  // The three importers below are shared by every way an image can arrive: the
+  // file picker, the drop zone and a clipboard paste. A paste hands over the
+  // same bytes as a drop, only without a file on disk behind them, so the two
+  // routes differ solely in how they get to these.
+
+  /** SVG markup → layers, or the tracer when the markup only wraps a bitmap. */
+  const importSvgMarkup = async (
+    markup: string,
+    filename: string,
+    isNewProject: boolean
+  ) => {
+    try {
+      const { shapes: parsedShapes, width, height } =
+        parseSvgToVectorShapes(markup);
+
+      if (parsedShapes.length === 0) {
+        // Common case: a bitmap exported inside an <svg> wrapper. There is
+        // nothing to read as vectors, so hand the pixels to the tracer.
+        try {
+          const imageSrc = await svgToRasterSource(markup);
+          setTraceModalData({ isOpen: true, imageSrc, filename, isNewProject });
+        } catch (rasterErr) {
+          console.error('SVG rasterize error:', rasterErr);
+          alert(
+            'No vector shapes found in SVG, and it could not be traced as an image.'
+          );
+        }
+        return;
+      }
+
+      recordHistory(shapes, dimensions);
+
+      if (isNewProject) {
+        setDimensions({ width, height, name: filename });
+        setShapes(parsedShapes);
+        setSelectedShapeIds([parsedShapes[0].id]);
+      } else {
+        // Import into existing canvas
+        setShapes((prev) => [...prev, ...parsedShapes]);
+        setSelectedShapeIds(parsedShapes.map((s) => s.id));
+      }
+    } catch (err) {
+      console.error('SVG parse error:', err);
+      alert('Could not parse SVG vector lines. Please check the file.');
+    }
+  };
+
+  /** Raster pixels → the Image Trace Outliner. */
+  const importRasterBlob = (
+    blob: Blob,
+    filename: string,
+    isNewProject: boolean
+  ) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setTraceModalData({
+        isOpen: true,
+        imageSrc: e.target?.result as string,
+        filename,
+        isNewProject,
+      });
+    };
+    reader.readAsDataURL(blob);
+  };
+
   // --- File Upload & Vectorization Handler ---
   const handleFileSelected = (file: File, isNewProject: boolean) => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
@@ -1031,62 +1092,11 @@ function CanvaFrameApp() {
     } else if (ext === 'svg') {
       // Direct SVG vector parsing
       const reader = new FileReader();
-      reader.onload = async (e) => {
-        const text = e.target?.result as string;
-        try {
-          const { shapes: parsedShapes, width, height } =
-            parseSvgToVectorShapes(text);
-
-          if (parsedShapes.length === 0) {
-            // Common case: a bitmap exported inside an <svg> wrapper. There is
-            // nothing to read as vectors, so hand the pixels to the tracer.
-            try {
-              const imageSrc = await svgToRasterSource(text);
-              setTraceModalData({
-                isOpen: true,
-                imageSrc,
-                filename: file.name,
-                isNewProject,
-              });
-            } catch (rasterErr) {
-              console.error('SVG rasterize error:', rasterErr);
-              alert(
-                'No vector shapes found in SVG, and it could not be traced as an image.'
-              );
-            }
-            return;
-          }
-
-          recordHistory(shapes, dimensions);
-
-          if (isNewProject) {
-            setDimensions({ width, height, name: file.name });
-            setShapes(parsedShapes);
-            setSelectedShapeIds([parsedShapes[0].id]);
-          } else {
-            // Import into existing canvas
-            setShapes((prev) => [...prev, ...parsedShapes]);
-            setSelectedShapeIds(parsedShapes.map((s) => s.id));
-          }
-        } catch (err) {
-          console.error('SVG parse error:', err);
-          alert('Could not parse SVG vector lines. Please check the file.');
-        }
-      };
+      reader.onload = (e) =>
+        importSvgMarkup((e.target?.result as string) || '', file.name, isNewProject);
       reader.readAsText(file);
     } else if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
-      // Raster image: open Image Trace Outliner modal
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const imageSrc = e.target?.result as string;
-        setTraceModalData({
-          isOpen: true,
-          imageSrc,
-          filename: file.name,
-          isNewProject,
-        });
-      };
-      reader.readAsDataURL(file);
+      importRasterBlob(file, file.name, isNewProject);
     } else {
       alert('Supported file formats: .cf.json (saved project), SVG, PNG, JPG, JPEG, WEBP.');
     }
@@ -1137,6 +1147,91 @@ function CanvaFrameApp() {
       window.removeEventListener('drop', swallow);
     };
   }, []);
+
+  // --- Clipboard Import (⌘/Ctrl+C, ⌘/Ctrl+V) ---
+  // Both chords are arbitrated by the real clipboard events rather than by the
+  // keydown handler above, because only these events can see what the system
+  // clipboard is carrying. A screenshot has to beat the app's own layer buffer
+  // to the paste, or copying a layer once would block every image paste after
+  // it; that is impossible to decide from a keystroke alone.
+
+  const clipboardTargetIsField = (e: ClipboardEvent) => {
+    const target = e.target as HTMLElement | null;
+    return (
+      target?.tagName === 'INPUT' ||
+      target?.tagName === 'TEXTAREA' ||
+      !!target?.isContentEditable
+    );
+  };
+
+  useEffect(() => {
+    const handleCopyEvent = (e: ClipboardEvent) => {
+      if (isAnyModalOpen || clipboardTargetIsField(e)) return;
+      // Highlighted text in the chrome is the browser's to copy, not ours.
+      if (window.getSelection()?.toString()) return;
+      if (!handleCopy()) return;
+
+      // Layers only mean something inside this app, so the system clipboard
+      // gets a plain-text stand-in. Writing it is the point rather than a
+      // courtesy: it clears whatever image was on the clipboard before, so the
+      // next paste hands back the layers just copied and not an old screenshot.
+      e.clipboardData?.setData(
+        'text/plain',
+        `${clipboard.current.length} layer(s) copied from Canva Frame Maker`
+      );
+      e.preventDefault();
+    };
+
+    window.addEventListener('copy', handleCopyEvent);
+    return () => window.removeEventListener('copy', handleCopyEvent);
+  }, [handleCopy, isAnyModalOpen]);
+
+  useEffect(() => {
+    const handlePasteEvent = (e: ClipboardEvent) => {
+      if (isAnyModalOpen || clipboardTargetIsField(e)) return;
+
+      const data = e.clipboardData;
+      if (!data) return;
+
+      const image = Array.from(data.items)
+        .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .find((file): file is File => file !== null);
+
+      // Every import below passes `false` for isNewProject: a paste lands on the
+      // canvas that is already open, so it imports into it rather than replacing
+      // it — and the trace modal still offers the other choice.
+      if (image) {
+        e.preventDefault();
+        const name = image.name || 'Pasted image';
+        if (image.type === 'image/svg+xml') {
+          const reader = new FileReader();
+          reader.onload = (ev) =>
+            importSvgMarkup((ev.target?.result as string) || '', name, false);
+          reader.readAsText(image);
+        } else {
+          importRasterBlob(image, name, false);
+        }
+        return;
+      }
+
+      // Figma, Illustrator and a plain code editor all put SVG on the clipboard
+      // as text rather than as a file, so markup counts as a vector paste too.
+      const text = data.getData('text/plain').trim();
+      if (/^(<\?xml[\s\S]*?\?>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(text)) {
+        e.preventDefault();
+        importSvgMarkup(text, 'Pasted SVG', false);
+        return;
+      }
+
+      // Nothing importable on the system clipboard: fall back to the layers
+      // copied inside the app.
+      if (handlePaste()) e.preventDefault();
+    };
+
+    window.addEventListener('paste', handlePasteEvent);
+    return () => window.removeEventListener('paste', handlePasteEvent);
+  }, [handlePaste, isAnyModalOpen, shapes, dimensions, recordHistory]);
 
   const handleTraceConfirm = (
     newShapes: VectorShape[],

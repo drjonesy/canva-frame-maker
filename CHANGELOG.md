@@ -11,6 +11,17 @@ This project has no releases yet, so entries are grouped by date.
 
 #### Added
 
+- **Paste an image straight onto the canvas (Ctrl/⌘+V).** A screenshot, a copy
+  from a browser or from any image editor lands in the Image Trace Outliner the
+  same way a dropped file does — set to import into the open canvas, since that
+  is what pasting onto it means, with the replace choice still there in the
+  modal. SVG on the clipboard comes in as real vectors, whether it arrives as a
+  file or, as Figma and Illustrator send it, as plain markup on `text/plain`.
+  - The file picker, the drop zone and the clipboard now share two importers
+    (`importSvgMarkup`, `importRasterBlob`) rather than each unrolling the same
+    `FileReader` work: a paste hands over exactly the same bytes as a drop, only
+    without a file on disk behind them.
+
 - **A Fonts tool (`T`) on the left rail, and a Fonts tab beside Layers.** Pick
   the tool, click the canvas, and type: a text layer appears as real vector
   outlines, and the tab on the right sets its family, size, weight, slant,
@@ -108,6 +119,22 @@ This project has no releases yet, so entries are grouped by date.
     bold Playfair Display came back drawn at 400.
 
 #### Changed
+
+- **Copy and paste moved off the keydown handler onto the real `copy`/`paste`
+  events.** A keystroke cannot tell a copied layer from a copied screenshot —
+  only the clipboard event can see what is actually on the clipboard — and the
+  old handler called `preventDefault` whenever the app's layer buffer was
+  non-empty, which would have cancelled the paste event outright. So one copied
+  layer would have blocked every image paste for the rest of the session.
+- **An in-app copy now also writes a plain-text stand-in to the system
+  clipboard.** Layers mean nothing outside this app, so the text itself is
+  filler; writing it is the point, because it clears whatever image was on the
+  clipboard before. Without it the reverse of the bug appears: copy a layer
+  after copying a screenshot and the paste would hand back the older screenshot
+  forever. Highlighted text in the chrome is still left to the browser to copy.
+- **The File menu says so** — a line under the two import items naming the drop
+  zone and Ctrl/⌘+V, since neither is discoverable from a menu that only offers
+  a file picker.
 
 - **The Fonts tool and the Fonts tab are now called Text** — the rail button
   (`T`) and the tab beside Layers, plus every hint, tooltip and empty-state

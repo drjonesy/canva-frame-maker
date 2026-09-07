@@ -258,6 +258,12 @@ export const Toolbar: React.FC<Props> = ({
                   <div className={`text-[10px] font-mono ${isDark ? 'text-neutral-400' : 'text-gray-500'}`}>Import image/SVG as new layer</div>
                 </div>
               </button>
+
+              <div className={`px-3 pt-1.5 pb-0.5 text-[10px] font-mono leading-snug ${
+                isDark ? 'text-neutral-500' : 'text-gray-400'
+              }`}>
+                Or drop a file on the canvas, or paste a copied image with Ctrl/⌘+V
+              </div>
             </div>
           )}
         </div>
